@@ -1,0 +1,35 @@
+<?xml version="1.0"?>
+<!--
+  Server-level limits for a single-node ClickHouse sharing a laptop.
+
+  The container has a 2 GiB cgroup limit. ClickHouse reads that limit, but its
+  defaults still assume it owns the machine, so caches and background pools are
+  sized down explicitly here.
+-->
+<clickhouse>
+    <!-- Ceiling for all queries combined, as a fraction of the cgroup limit.
+         Leaves room for caches, background merges, and the Kafka consumers. -->
+    <max_server_memory_usage_to_ram_ratio>0.75</max_server_memory_usage_to_ram_ratio>
+
+    <!-- 256 MiB of mark cache is plenty at this data volume. The uncompressed
+         cache is off: telemetry queries are scan-heavy over recent data with
+         little repeat access, so it would evict marks for no benefit. -->
+    <mark_cache_size>268435456</mark_cache_size>
+    <uncompressed_cache_size>0</uncompressed_cache_size>
+
+    <!-- Background merge pool. Merges are how MergeTree keeps part counts
+         under control; starving this pool while the Kafka engine inserts
+         steadily is the classic "too many parts" failure. -->
+    <background_pool_size>8</background_pool_size>
+    <background_schedule_pool_size>8</background_schedule_pool_size>
+
+    <!-- Threads that drive Kafka table engine consumers. Must be >= the total
+         kafka_num_consumers across all Kafka tables, or consumption silently
+         serializes and lag grows for reasons that look like broker trouble. -->
+    <background_message_broker_schedule_pool_size>8</background_message_broker_schedule_pool_size>
+
+    <logger>
+        <level>information</level>
+        <console>1</console>
+    </logger>
+</clickhouse>

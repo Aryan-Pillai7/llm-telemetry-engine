@@ -1,0 +1,144 @@
+# Local development stack for the LLM/agent telemetry pipeline.
+#
+#   python tasks.py up      # start, waiting for all healthchecks
+#   python tasks.py down    # stop, keep volumes
+#   python tasks.py nuke    # stop and delete volumes
+#
+# Every service carries an explicit memory limit. This stack runs alongside an
+# IDE and a browser on a laptop, and an unbounded ClickHouse or Redpanda will
+# happily consume everything the host has. Total ceiling here is ~4.3 GiB.
+#
+# Image versions are pinned. A telemetry pipeline that silently changes its
+# collector or broker version underneath a benchmark is not measuring anything.
+
+name: llm-telemetry-engine
+
+services:
+  # --- Broker ---------------------------------------------------------------
+  # Single-broker dev mode (ADR-001). No ZooKeeper, no replication.
+  # Redpanda is the shock absorber in the backpressure design (ADR-003): its
+  # disk-backed retention is what turns a ClickHouse stall into consumer lag
+  # instead of data loss.
+  redpanda:
+    image: redpandadata/redpanda:v26.1.17
+    container_name: te-redpanda
+    command:
+      - redpanda
+      - start
+      # One core, one GiB. --overprovisioned tells Redpanda it is sharing a
+      # machine, so it yields CPU instead of busy-polling a whole core.
+      - --smp=1
+      - --memory=1G
+      - --reserve-memory=0M
+      - --overprovisioned
+      - --node-id=0
+      - --check=false
+      # Two listeners: `internal` for containers on the compose network,
+      # `external` for tools running on the host (tests, the CLI, rpk).
+      - --kafka-addr=internal://0.0.0.0:9092,external://0.0.0.0:19092
+      - --advertise-kafka-addr=internal://redpanda:9092,external://localhost:19092
+    ports:
+      - "19092:19092" # Kafka API (host)
+      - "9644:9644" # Admin API / Prometheus metrics
+    volumes:
+      - redpanda-data:/var/lib/redpanda/data
+    mem_limit: 1500m
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -q 'Healthy:.*true'"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  # --- OLAP store -----------------------------------------------------------
+  # Single node, no replication. Consumes Redpanda directly through the Kafka
+  # table engine (ADR-002) -- there is deliberately no consumer microservice.
+  clickhouse:
+    image: clickhouse/clickhouse-server:25.8.33.6-alpine
+    container_name: te-clickhouse
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    ports:
+      - "8123:8123" # HTTP
+      - "9000:9000" # native protocol
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+      - ./clickhouse/config.d:/etc/clickhouse-server/config.d:ro
+      - ./clickhouse/users.d:/etc/clickhouse-server/users.d:ro
+    ulimits:
+      # ClickHouse opens a lot of files; the default container limit is low
+      # enough to cause confusing failures once part counts grow.
+      nofile:
+        soft: 262144
+        hard: 262144
+    mem_limit: 2g
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- localhost:8123/ping | grep -q Ok"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  # --- Collector ------------------------------------------------------------
+  # First hop off the inference endpoints. memory_limiter is first in every
+  # pipeline so the collector sheds load rather than OOMing, and the kafka
+  # exporter's queue is bounded and non-blocking (ADR-003).
+  otelcol:
+    image: otel/opentelemetry-collector-contrib:0.159.0
+    container_name: te-otelcol
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    command: ["--config=/etc/otelcol/config.yaml"]
+    ports:
+      - "4317:4317" # OTLP gRPC
+      - "4318:4318" # OTLP HTTP
+      - "8888:8888" # collector self-telemetry (drop counters live here)
+      - "13133:13133" # health_check extension
+    volumes:
+      - ./otelcol/config.yaml:/etc/otelcol/config.yaml:ro
+    # Must stay comfortably above memory_limiter's limit_mib + spike_limit_mib,
+    # or the container is OOM-killed before the limiter can shed anything.
+    mem_limit: 768m
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- localhost:13133/ | grep -q StatusOK"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  # --- Dashboards -----------------------------------------------------------
+  grafana:
+    image: grafana/grafana:13.1.4
+    container_name: te-grafana
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+    environment:
+      # Dev convenience only: no login wall on a local dashboard stack.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_INSTALL_PLUGINS: grafana-clickhouse-datasource
+      GF_USERS_DEFAULT_THEME: dark
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- localhost:3000/api/health | grep -q ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      # First boot downloads the ClickHouse datasource plugin.
+      start_period: 45s
+
+volumes:
+  redpanda-data:
+  clickhouse-data:
+  grafana-data:

@@ -1,0 +1,28 @@
+# Grafana datasource provisioning.
+#
+# Provisioned as code so a fresh `python tasks.py nuke && up` comes back with
+# working dashboards instead of a manual click-through. Dashboards themselves
+# land in Phase 5.
+
+apiVersion: 1
+
+datasources:
+  - name: ClickHouse
+    uid: clickhouse-telemetry
+    type: grafana-clickhouse-datasource
+    access: proxy
+    isDefault: true
+    editable: false
+    jsonData:
+      host: clickhouse
+      port: 9000
+      protocol: native
+      secure: false
+      username: default
+      defaultDatabase: telemetry
+      # Panels should give up before the ClickHouse-side max_execution_time so
+      # the error surfaces in Grafana rather than as a dropped connection.
+      dialTimeout: 10
+      queryTimeout: 55
+    secureJsonData:
+      password: ""

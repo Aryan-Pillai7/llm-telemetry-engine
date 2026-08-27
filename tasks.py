@@ -145,11 +145,35 @@ def ci() -> int:
     return first_failure(lint(), test())
 
 
+@target("Reconcile Redpanda topics and apply ClickHouse migrations")
+def bootstrap() -> int:
+    if (rc := require_venv()) != 0:
+        return rc
+    return py("-m", "telemetry_engine.cli", "bootstrap")
+
+
+@target("Apply pending ClickHouse migrations")
+def migrate() -> int:
+    if (rc := require_venv()) != 0:
+        return rc
+    return py("-m", "telemetry_engine.cli", "migrate")
+
+
 # --- Stack targets -----------------------------------------------------------
 
 
-@target("Start the docker compose stack (redpanda, clickhouse, otelcol, grafana)")
+@target("Start the stack and bootstrap topics + schema")
 def up() -> int:
+    rc = compose("up", "-d", "--wait")
+    if rc != 0:
+        return rc
+    # A started stack is not a usable stack: the topic partition count and the
+    # schema are architectural decisions, not broker defaults (see ADR-004/009).
+    return bootstrap()
+
+
+@target("Start the stack only, without bootstrapping")
+def up_bare() -> int:
     return compose("up", "-d", "--wait")
 
 

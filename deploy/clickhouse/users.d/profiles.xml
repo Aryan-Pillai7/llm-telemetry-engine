@@ -1,0 +1,48 @@
+<?xml version="1.0"?>
+<!--
+  Query-level limits for the default profile.
+
+  A dashboard panel with a careless GROUP BY is the most likely way this node
+  falls over. These caps make that a failed query with a clear error rather
+  than an OOM that takes the ingest path down with it.
+-->
+<clickhouse>
+    <profiles>
+        <default>
+            <!-- Per-query ceiling, well under the server ceiling so a single
+                 runaway query cannot starve the Kafka consumers. -->
+            <max_memory_usage>1000000000</max_memory_usage>
+
+            <!-- Grafana panels should fail fast rather than pile up. -->
+            <max_execution_time>60</max_execution_time>
+
+            <!-- The box has few cores and the ingest path needs some. -->
+            <max_threads>4</max_threads>
+
+            <!-- Spill to disk instead of dying on a large aggregation. Slower,
+                 but a slow dashboard beats a restarted server. -->
+            <max_bytes_before_external_group_by>500000000</max_bytes_before_external_group_by>
+
+            <!-- Guard rail for the cardinality problem this project is about:
+                 a GROUP BY that produces more than 5M distinct keys is a bug in
+                 the query, not a workload that deserves to run. Rollups exist
+                 precisely so dashboards never need to do this. -->
+            <max_rows_to_group_by>5000000</max_rows_to_group_by>
+            <group_by_overflow_mode>throw</group_by_overflow_mode>
+        </default>
+    </profiles>
+
+    <users>
+        <default>
+            <profile>default</profile>
+            <quota>default</quota>
+            <!-- Dev stack, no password. Bound to localhost by the compose port
+                 mapping; do not reuse this file anywhere reachable. -->
+            <password></password>
+            <networks>
+                <ip>::/0</ip>
+            </networks>
+            <access_management>1</access_management>
+        </default>
+    </users>
+</clickhouse>

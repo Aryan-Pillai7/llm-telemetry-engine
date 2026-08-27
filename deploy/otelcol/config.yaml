@@ -1,0 +1,105 @@
+# OpenTelemetry Collector configuration.
+#
+# This file is where the project's central claim is enforced: the pipeline must
+# never apply backpressure to the inference endpoints it observes (ADR-003).
+# Read the exporter's queue settings below with that in mind.
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  # MUST be first in every pipeline. Under memory pressure the limiter starts
+  # refusing new data at the receiver, which is a bounded, visible failure --
+  # far better than the collector being OOM-killed and losing everything
+  # already buffered.
+  #
+  # Sized against the container's 768 MiB limit with headroom: the limiter has
+  # to trip before the kernel's OOM killer does, or it accomplishes nothing.
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 450
+    spike_limit_mib: 128
+
+  # Batching is the single biggest lever on downstream cost. Large, infrequent
+  # batches keep Redpanda produce overhead low and, more importantly, keep
+  # ClickHouse part counts down once the Kafka engine is consuming.
+  batch:
+    send_batch_size: 8192
+    send_batch_max_size: 16384
+    timeout: 5s
+
+exporters:
+  kafka:
+    brokers: [redpanda:9092]
+
+    traces:
+      topic: otel.spans
+      # JSON on the wire so ClickHouse's Kafka engine can read it with
+      # JSONAsString and parse in a materialized view (Phase 3). Costs bytes
+      # versus protobuf, buys a schema that is debuggable with
+      # `rpk topic consume`.
+      encoding: otlp_json
+
+    # ADR-004: key each message by trace ID. Keying by tenant would hand a
+    # single hot tenant an entire partition; trace ID spreads evenly across all
+    # six while keeping a trace's spans co-partitioned.
+    partition_traces_by_id: true
+
+    producer:
+      compression: snappy
+      max_message_bytes: 4194304
+      # acks=1: the leader acknowledges without waiting for replicas. There is
+      # exactly one broker (ADR-001), so stronger acks buy nothing here.
+      required_acks: 1
+
+    sending_queue:
+      enabled: true
+      num_consumers: 4
+      queue_size: 2000
+      # THE backpressure decision. When the queue is full the exporter drops
+      # the batch and increments otelcol_exporter_send_failed_spans instead of
+      # blocking the receiver. Blocking would propagate pressure back up the
+      # OTLP call and into the inference endpoint -- the pipeline becoming the
+      # outage it exists to detect. We lose telemetry under overload, on
+      # purpose, and the counter says exactly how much.
+      block_on_overflow: false
+
+    retry_on_failure:
+      enabled: true
+      initial_interval: 200ms
+      max_interval: 5s
+      # Bounded on purpose: a batch that cannot land in 30s is stale telemetry
+      # occupying queue space that fresher data needs.
+      max_elapsed_time: 30s
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+service:
+  extensions: [health_check]
+
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [kafka]
+
+  telemetry:
+    logs:
+      level: info
+    metrics:
+      # `detailed` keeps the per-exporter queue-size and send-failed counters,
+      # which are the drop signal the Phase 6 experiment measures.
+      level: detailed
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 0.0.0.0
+                port: 8888

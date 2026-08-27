@@ -1,0 +1,35 @@
+# Declarative topic specification, reconciled by `telemetry-engine topics apply`.
+#
+# Topics are described here rather than created ad hoc so the broker's shape is
+# reviewable in a diff and reproducible on a fresh `nuke` + `up`.
+#
+# The reconciler creates missing topics, grows partition counts, and updates
+# changed configs. It never shrinks partitions or deletes topics -- both are
+# destructive and belong in a human's hands.
+
+topics:
+  - name: otel.spans
+    # ADR-009: six partitions at the 5k spans/s sustained target. This is also
+    # the ceiling on ClickHouse's kafka_num_consumers -- extra consumers beyond
+    # the partition count sit idle.
+    partitions: 6
+    replication_factor: 1
+    config:
+      # ADR-003: Redpanda is the shock absorber. Retention must exceed the
+      # worst tolerable ClickHouse outage, or lag turns into data loss. Six
+      # hours at ~5k spans/s is comfortably more than any dev-stack stall.
+      retention.ms: "21600000" # 6h
+
+      # Bound the on-disk footprint too. Whichever limit trips first wins, so
+      # a burst well above the design rate cannot fill a laptop disk.
+      retention.bytes: "8589934592" # 8 GiB
+
+      cleanup.policy: delete
+
+      # The collector already compresses with snappy; `producer` preserves the
+      # producer's codec rather than paying to recompress on the broker.
+      compression.type: producer
+
+      # Must be >= the collector's producer.max_message_bytes, or large batches
+      # are rejected at exactly the moment the pipeline is under most stress.
+      max.message.bytes: "4194304"
