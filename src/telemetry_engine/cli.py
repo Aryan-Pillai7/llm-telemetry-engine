@@ -363,9 +363,16 @@ def rollup_backfill(
             return
 
         # End at the rollup's earliest row so the windows abut without touching.
+        # Both bounds can be None on an empty database; mypy caught that this
+        # path did `None - timedelta`, which is a TypeError at runtime rather
+        # than the clean "nothing to do" it was meant to be.
         end = current.rollup_min or current.raw_max
+        if end is None:
+            typer.echo("  no data in spans_raw; nothing to backfill")
+            return
+
         start = end - timedelta(hours=hours)
-        if current.raw_min and start < current.raw_min:
+        if current.raw_min is not None and start < current.raw_min:
             start = current.raw_min
 
         typer.echo(f"  backfilling [{start} .. {end})")
@@ -518,14 +525,19 @@ def cold_verify() -> None:
     returns correct answers while reading far more data than it should, which
     surfaces as nothing at all.
     """
-    from telemetry_engine.coldtier.query import ColdTierMismatchError, open_lake, verify_sorted
+    from telemetry_engine.coldtier.query import (
+        ColdTierMismatchError,
+        _one,
+        open_lake,
+        verify_sorted,
+    )
 
     settings = get_settings()
     root = settings.coldtier.root
 
     try:
         with open_lake(root) as conn:
-            rows = conn.execute("SELECT count(*) FROM spans").fetchone()[0]
+            rows = _one(conn.execute("SELECT count(*) FROM spans").fetchone(), "lake row count")[0]
         typer.echo(f"  readable:   yes ({rows:,} rows)")
     except ColdTierMismatchError as exc:
         typer.secho(f"  MISMATCH: {exc}", fg=typer.colors.RED)

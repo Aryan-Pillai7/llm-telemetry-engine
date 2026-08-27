@@ -26,6 +26,19 @@ from telemetry_engine.common.logging import get_logger
 
 log = get_logger(__name__)
 
+
+def _one(row: tuple | None, what: str) -> tuple:
+    """Unwrap a DuckDB `fetchone()`, which is Optional.
+
+    An aggregate always returns a row, so None here means the query did not run
+    the way the caller believes. Raising says so instead of failing later with a
+    TypeError several frames away from the cause.
+    """
+    if row is None:
+        raise RuntimeError(f"expected a row from {what}, got none")
+    return row
+
+
 VIEW = "spans"
 DEDUPED_VIEW = "spans_deduped"
 
@@ -112,10 +125,14 @@ def open_lake(root: Path, *, verify: bool = True) -> Iterator[duckdb.DuckDBPyCon
         _create_view(conn, root)
 
         if verify:
-            seen = conn.execute(
-                "SELECT count(DISTINCT filename) FROM (SELECT filename FROM read_parquet(?, filename = true))",
-                [glob_pattern(root)],
-            ).fetchone()[0]
+            seen = _one(
+                conn.execute(
+                    "SELECT count(DISTINCT filename) FROM "
+                    "(SELECT filename FROM read_parquet(?, filename = true))",
+                    [glob_pattern(root)],
+                ).fetchone(),
+                "file-count cross-check",
+            )[0]
             if seen != len(on_disk):
                 raise ColdTierMismatchError(
                     f"DuckDB reads {seen} files but {len(on_disk)} exist on disk. "
@@ -133,7 +150,9 @@ def stats(root: Path) -> LakeStats:
         return LakeStats(files=0, rows=0, bytes_on_disk=0, partitions=0)
 
     with open_lake(root) as conn:
-        rows = int(conn.execute(f"SELECT count(*) FROM {VIEW}").fetchone()[0])
+        rows = int(
+            _one(conn.execute(f"SELECT count(*) FROM {VIEW}").fetchone(), "lake row count")[0]
+        )
 
     return LakeStats(
         files=len(files),
@@ -164,7 +183,8 @@ def verify_sorted(root: Path, *, sample_files: int = 3) -> list[str]:
                 ) WHERE prev IS NOT NULL AND tenant_id < prev
                 """,
                 [str(path)],
-            ).fetchone()[0]
+            ).fetchone()
+            out_of_order = _one(out_of_order, "sort-order check")[0]
         if out_of_order:
             problems.append(f"{path.name}: {out_of_order} rows break tenant_id ordering")
     return problems
@@ -194,7 +214,10 @@ def duplication(root: Path) -> DuplicationReport:
     real property of the system invisible.
     """
     with open_lake(root) as conn:
-        row = conn.execute(f"SELECT count(*), count(DISTINCT span_id) FROM {VIEW}").fetchone()
+        row = _one(
+            conn.execute(f"SELECT count(*), count(DISTINCT span_id) FROM {VIEW}").fetchone(),
+            "duplication report",
+        )
     return DuplicationReport(rows=int(row[0]), distinct_spans=int(row[1]))
 
 

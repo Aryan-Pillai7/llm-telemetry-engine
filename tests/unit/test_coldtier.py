@@ -9,6 +9,7 @@ invariants that keep a skip from happening quietly.
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta
+from itertools import pairwise
 from pathlib import Path
 
 import pytest
@@ -119,7 +120,7 @@ def test_planning_covers_the_range_without_gaps_or_overlaps() -> None:
         lag_margin=timedelta(0),
     )
     assert windows[0].start == datetime(2026, 8, 27, 10)
-    for earlier, later in zip(windows, windows[1:], strict=False):
+    for earlier, later in pairwise(windows):
         assert earlier.end == later.start, "windows must abut exactly"
 
 

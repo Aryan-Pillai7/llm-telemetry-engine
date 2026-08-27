@@ -20,8 +20,8 @@ env:
   TE_NO_VENV: "1"
 
 jobs:
-  lint-and-test:
-    name: Lint & unit tests
+  static:
+    name: Lint, types, inert guards
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -40,12 +40,51 @@ jobs:
       - name: Lint
         run: python tasks.py lint
 
-      # Unit tests only: CI has no docker stack, and integration tests are
-      # deselected by the `not integration` marker expression.
-      - name: Unit tests
-        run: python tasks.py test
+      - name: Type check
+        # mypy was configured in pyproject from Phase 0 and invoked nowhere
+        # until Phase 8. When first run it found 13 errors, including a
+        # None-arithmetic bug in `rollup-backfill` that would have raised
+        # TypeError on an empty database. A configured checker that nothing runs
+        # is the same failure as a guard that is never called.
+        run: python tasks.py typecheck
 
-  validate-config:
+      - name: Inert guard audit
+        # Finds checks that are defined but never invoked from the path they
+        # protect. Runtime testing cannot catch these: an inert guard produces
+        # no output, so nothing contradicts it and every test still passes.
+        # Precedent: the cold-tier export's value-fingerprint check was written,
+        # documented, and not called.
+        run: python tasks.py audit-guards
+
+  unit:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install
+        run: python tasks.py install
+
+      - name: Unit tests with coverage
+        run: python tasks.py coverage
+
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: htmlcov/
+          retention-days: 7
+
+  config:
     name: Validate infra config
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -53,23 +92,98 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # These steps become meaningful in Phase 1 when the config files land.
-      # They are guarded so CI stays green until then rather than being added
-      # after the fact and never wired up.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install
+        run: python tasks.py install
+
       - name: Validate docker compose file
-        run: |
-          if [ -f deploy/docker-compose.yml ]; then
-            docker compose -f deploy/docker-compose.yml config --quiet
-          else
-            echo "deploy/docker-compose.yml not present yet (Phase 1) - skipping"
-          fi
+        run: docker compose -f deploy/docker-compose.yml config --quiet
 
       - name: Validate OpenTelemetry Collector config
+        # Against the real binary, at the pinned version. The kafka exporter
+        # moved `topic`/`encoding` under a per-signal key in 0.159; a config
+        # that parses in one version silently fails to start in another.
         run: |
-          if [ -f deploy/otelcol/config.yaml ]; then
-            docker run --rm -v "$PWD/deploy/otelcol:/cfg:ro" \
-              otel/opentelemetry-collector-contrib:latest \
-              validate --config=/cfg/config.yaml
-          else
-            echo "deploy/otelcol/config.yaml not present yet (Phase 1) - skipping"
-          fi
+          docker run --rm -v "$PWD/deploy/otelcol:/cfg:ro" \
+            otel/opentelemetry-collector-contrib:0.159.0 \
+            validate --config=/cfg/config.yaml
+
+      - name: Check generated dashboards are current
+        # The committed JSON is what Grafana provisions; the builder is what we
+        # edit. If they drift, the dashboard in the running stack is not the one
+        # under review.
+        run: |
+          python -m telemetry_engine.cli dashboards
+          git diff --exit-code deploy/grafana/provisioning/dashboards/json/
+
+  integration:
+    name: End-to-end against a live stack
+    runs-on: ubuntu-latest
+    # The stack pull plus a load run needs real time; the default 6h is far too
+    # generous and 10 minutes is too tight.
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install
+        run: python tasks.py install
+
+      - name: Start the stack
+        # `up` waits for healthchecks, reconciles topics, applies migrations and
+        # syncs the cardinality allowlist. If any of that regresses, this step
+        # fails before a single test runs.
+        run: python tasks.py up
+
+      - name: Generate telemetry
+        # Modest rate: a GitHub runner has fewer cores than the dev laptop, and
+        # the point here is that data moves end to end, not how fast.
+        run: |
+          python -m telemetry_engine.cli load --duration 30 --rate 2000 --workers 2
+          python -m telemetry_engine.cli monitor --interval 2 --duration 10
+
+      - name: Wait for ingest to settle
+        # Ingest is asynchronous: the SDK batches, the collector batches, and
+        # ClickHouse flushes Kafka blocks every 3s. Asserting immediately would
+        # test the timing, not the pipeline.
+        run: python -c "import time; time.sleep(20)"
+
+      - name: Integration tests
+        run: python tasks.py test-integration
+
+      - name: Export and verify the cold tier
+        run: |
+          python -m telemetry_engine.cli cold export
+          python -m telemetry_engine.cli cold verify
+          python -m telemetry_engine.cli cold status
+
+      - name: Verify every dashboard panel against ClickHouse
+        run: python scripts/verify_dashboards.py
+
+      - name: Verify every dashboard panel through Grafana
+        # Distinct from the step above and not redundant: the SQL can be valid
+        # while every panel fails. Grafana's own global time variables are
+        # interpolated by the frontend, so queries using them passed direct SQL
+        # verification and failed through this path.
+        run: python scripts/verify_grafana.py
+
+      - name: Stack diagnostics on failure
+        if: failure()
+        run: |
+          docker compose -f deploy/docker-compose.yml ps
+          docker compose -f deploy/docker-compose.yml logs --tail 100
+
+      - name: Tear down
+        if: always()
+        run: python tasks.py nuke

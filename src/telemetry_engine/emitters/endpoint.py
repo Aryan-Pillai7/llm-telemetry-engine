@@ -31,6 +31,26 @@ from telemetry_engine.emitters.workload import WorkloadGenerator
 log = get_logger(__name__)
 
 
+def _as_int(value: object, default: int = 0) -> int:
+    """Narrow an attribute value to int, or fall back."""
+    if isinstance(value, bool) or not isinstance(value, int | float | str):
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _as_float(value: object, default: float = 0.0) -> float:
+    """Narrow an attribute value to float, or fall back."""
+    if isinstance(value, bool) or not isinstance(value, int | float | str):
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 class InferenceRequest(BaseModel):
     """Minimal chat-completions-shaped request body."""
 
@@ -126,9 +146,12 @@ def create_app(
             tenant_id=trace_data.tenant_id,
             trace_id=f"{id(trace_data):032x}",
             spans_emitted=spans,
-            input_tokens=int(attrs.get("gen_ai.usage.input_tokens", 0)),
-            output_tokens=int(attrs.get("gen_ai.usage.output_tokens", 0)),
-            ttft_ms=float(attrs.get("llm.time_to_first_token_ms", 0.0)),
+            # The attribute map is deliberately typed `object` -- it holds
+            # strings, ints, floats and bools -- so each numeric read is
+            # narrowed explicitly rather than trusting the value's shape.
+            input_tokens=_as_int(attrs.get("gen_ai.usage.input_tokens")),
+            output_tokens=_as_int(attrs.get("gen_ai.usage.output_tokens")),
+            ttft_ms=_as_float(attrs.get("llm.time_to_first_token_ms")),
             duration_ms=llm_child.duration_ms,
         )
 

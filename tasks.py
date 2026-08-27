@@ -140,9 +140,38 @@ def test_integration() -> int:
     return py("-m", "pytest", "-m", "integration")
 
 
-@target("Run every check CI runs")
+@target("Type check with mypy")
+def typecheck() -> int:
+    if (rc := require_venv()) != 0:
+        return rc
+    return py("-m", "mypy")
+
+
+@target("Find guards that are defined but never called")
+def audit_guards() -> int:
+    if (rc := require_venv()) != 0:
+        return rc
+    return py("scripts/find_inert_guards.py")
+
+
+@target("Unit tests with a coverage report")
+def coverage() -> int:
+    if (rc := require_venv()) != 0:
+        return rc
+    return py(
+        "-m",
+        "pytest",
+        "-m",
+        "not integration",
+        "--cov=telemetry_engine",
+        "--cov-report=term-missing:skip-covered",
+        "--cov-report=html",
+    )
+
+
+@target("Run every static check CI runs (lint, types, guard audit, unit tests)")
 def ci() -> int:
-    return first_failure(lint(), test())
+    return first_failure(lint(), typecheck(), audit_guards(), test())
 
 
 @target("Reconcile Redpanda topics and apply ClickHouse migrations")

@@ -98,8 +98,19 @@ HIGH_CARDINALITY_KEYS: Final[frozenset[str]] = frozenset(
 def assert_dimensions_are_disjoint() -> None:
     """Rollup dimensions and high-cardinality attributes must not overlap.
 
-    Cheap invariant, checked in tests: an attribute that is both a grouping key
-    and unbounded is precisely the bug this whole design exists to prevent.
+    An attribute that is both a grouping key and unbounded is precisely the bug
+    this design exists to prevent.
+
+    **Deliberately called only from the test suite.** Both sets above are module
+    constants, so the invariant can only be broken by editing this file, and a
+    test run is the earliest point at which that edit is checked. Asserting at
+    import time would add a cost to every process start and would vanish under
+    `python -O`, which strips assertions.
+
+    The inert-guard audit (`scripts/find_inert_guards.py`) reports this function
+    as test-only. That report is correct and this docstring is the answer to it:
+    the audit exists to make sure each such case was decided rather than
+    overlooked.
     """
     overlap = ROLLUP_DIMENSION_KEYS & HIGH_CARDINALITY_KEYS
     if overlap:

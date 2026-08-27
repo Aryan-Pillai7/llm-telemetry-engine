@@ -139,9 +139,26 @@ def sync_top_k(conn: Client, registry: Registry) -> dict[str, int]:
     return counts
 
 
+def rollup_columns(conn: Client, table: str = "telemetry.spans_1m") -> set[str]:
+    """Columns that actually exist on the rollup table."""
+    rows = conn.query(
+        "SELECT name FROM system.columns WHERE database = %(db)s AND table = %(t)s",
+        parameters={"db": table.split(".")[0], "t": table.split(".")[-1]},
+    ).result_rows
+    return {str(r[0]) for r in rows}
+
+
 def sync(conn: Client, registry: Registry | None = None) -> SyncResult:
-    """Sync the whole registry into ClickHouse and reload the dictionary."""
+    """Sync the whole registry into ClickHouse and reload the dictionary.
+
+    Validates the registry against the real rollup schema first. A dimension
+    naming a column that does not exist would otherwise sync happily and then
+    group by nothing -- the rollup would keep working and quietly lose that
+    dimension. `Registry.validate_columns` was written for exactly this and,
+    until the inert-guard audit, was never called from anywhere.
+    """
     reg = registry or load_registry()
+    reg.validate_columns(rollup_columns(conn))
     result = SyncResult()
     result.static_values = sync_static(conn, reg)
     result.top_k_values = sync_top_k(conn, reg)

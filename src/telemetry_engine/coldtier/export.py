@@ -327,6 +327,8 @@ def _parquet_fingerprint(path: Path) -> tuple:
             """,
             [str(path)],
         ).fetchone()
+    if row is None:
+        raise RuntimeError("parquet fingerprint query returned no row")
     return tuple(row)
 
 
