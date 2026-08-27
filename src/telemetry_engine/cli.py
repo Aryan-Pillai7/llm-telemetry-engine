@@ -309,6 +309,71 @@ def dimensions_status(
     typer.echo(f"  theoretical max rows/minute: {registry.max_rows_per_bucket:,}")
 
 
+@app.command("rollup-status")
+def rollup_status() -> None:
+    """Report whether the rollups cover everything in spans_raw.
+
+    Materialized views do not backfill: rows ingested before a view existed are
+    absent from it. This is how you find out.
+    """
+    from telemetry_engine.storage.client import client
+    from telemetry_engine.storage.rollups import plan
+
+    settings = get_settings()
+    with client(settings.clickhouse) as conn:
+        result = plan(conn)
+
+    typer.echo(f"  raw:    {result.raw_rows:,} spans  [{result.raw_min} .. {result.raw_max}]")
+    typer.echo(
+        f"  1m:     {result.rollup_spans:,} spans  [{result.rollup_min} .. {result.rollup_max}]"
+    )
+    if result.needs_backfill:
+        typer.secho(f"  {result.describe()}", fg=typer.colors.YELLOW)
+        typer.echo("  run: telemetry-engine rollup-backfill --hours N")
+    else:
+        typer.echo("  rollup covers all raw spans")
+
+
+@app.command("rollup-backfill")
+def rollup_backfill(
+    hours: float = typer.Option(..., help="Backfill this many hours ending at the rollup start."),
+    yes: bool = typer.Option(False, "--yes", help="Skip the confirmation prompt."),
+) -> None:
+    """Aggregate historical raw spans into spans_1m.
+
+    Backfills the window immediately BEFORE the rollup's current earliest row,
+    so it cannot overlap what the view already covers. Overlapping would double
+    count: aggregate states merge, they do not replace.
+    """
+    from datetime import timedelta
+
+    from telemetry_engine.storage.client import client
+    from telemetry_engine.storage.rollups import backfill, plan
+
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    with client(settings.clickhouse) as conn:
+        current = plan(conn)
+        if not current.needs_backfill:
+            typer.echo("  rollup already covers all raw spans; nothing to do")
+            return
+
+        # End at the rollup's earliest row so the windows abut without touching.
+        end = current.rollup_min or current.raw_max
+        start = end - timedelta(hours=hours)
+        if current.raw_min and start < current.raw_min:
+            start = current.raw_min
+
+        typer.echo(f"  backfilling [{start} .. {end})")
+        if not yes:
+            typer.confirm("  proceed?", abort=True)
+
+        aggregated = backfill(conn, start=start, end=end)
+
+    typer.echo(f"  aggregated {aggregated:,} raw spans")
+
+
 @app.command()
 def bootstrap() -> None:
     """Bring a freshly started stack to a usable state: topics, schema, allowlist."""

@@ -7,12 +7,19 @@ enforces it against live data.
 The property worth stating plainly, because it is the entire point of this
 design: the number of rows a rollup can contain per time bucket is bounded by
 
-    product(budget + 1 for every dimension)
+    product(budget + 2 for every dimension)
 
-and that bound holds regardless of what the emitters send, because any value
-outside the allowlist is rewritten to a single `__other__` bucket. Cardinality
-becomes a number chosen in a reviewed file rather than an emergent property of
-whatever traffic shows up.
+and that bound holds regardless of what the emitters send, because every value
+is rewritten to one of three things: itself (if registered), `__other__` (if
+present but unregistered), or `__none__` (if absent). Cardinality becomes a
+number chosen in a reviewed file rather than an emergent property of whatever
+traffic shows up.
+
+The two sentinels are kept distinct on purpose. `__other__` means "something is
+emitting a value nobody registered" and is worth alerting on; `__none__` means
+"this dimension does not apply to this kind of span" and is routine. Collapsing
+them together buries the first signal under the second -- which is exactly what
+the first version of this design did.
 """
 
 from __future__ import annotations
@@ -70,8 +77,8 @@ class Dimension:
 
     @property
     def max_distinct(self) -> int:
-        """Budget plus the `__other__` bucket."""
-        return self.budget + 1
+        """Budget plus both sentinel buckets (`__other__` and `__none__`)."""
+        return self.budget + 2
 
 
 @dataclass(frozen=True)
@@ -80,6 +87,7 @@ class Registry:
 
     version: int
     other_bucket: str
+    none_bucket: str
     dimensions: tuple[Dimension, ...]
     forbidden: frozenset[str]
 
@@ -99,7 +107,7 @@ class Registry:
     def max_rows_per_bucket(self) -> int:
         """Upper bound on rollup rows per time bucket.
 
-        The product of every dimension's budget plus its `__other__` bucket.
+        The product of every dimension's budget plus its two sentinel buckets.
         This is the number that makes the design's cardinality claim checkable
         rather than aspirational -- and it is asserted in the test suite.
         """
@@ -152,6 +160,7 @@ def load_registry(path: Path | None = None) -> Registry:
     registry = Registry(
         version=int(raw.get("version", 1)),
         other_bucket=str(raw.get("other_bucket", "__other__")),
+        none_bucket=str(raw.get("none_bucket", "__none__")),
         dimensions=dimensions,
         forbidden=frozenset(str(f) for f in (raw.get("forbidden_as_dimensions") or ())),
     )

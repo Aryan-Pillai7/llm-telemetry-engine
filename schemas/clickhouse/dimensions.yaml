@@ -22,10 +22,17 @@
 
 version: 1
 
-# Literal value used for anything outside the allowlist. Deliberately ugly so
-# it is obvious in a dashboard that traffic is being bucketed rather than
-# attributed.
+# Literal used for a value that is present but NOT on the allowlist. This is an
+# actionable signal: something is emitting a dimension nobody registered -- a
+# shadow deployment, a new region, a stale allowlist.
 other_bucket: __other__
+
+# Literal used when a span simply does not carry the dimension at all. A tool
+# span has no model; an embeddings call has no completion. This is normal and
+# must be kept SEPARATE from __other__, or the actionable signal drowns: in
+# testing, 18,243 tool spans with no model sat in the same bucket as exactly
+# 300 genuinely unregistered ones, making the real finding invisible.
+none_bucket: __none__
 
 dimensions:
   - name: tenant_id

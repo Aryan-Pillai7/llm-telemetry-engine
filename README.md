@@ -39,9 +39,13 @@ Phase 3 complete — the hot path moves data end to end. On a cold stack,
 106,737 emitted spans produced exactly 106,737 rows in ClickHouse, with zero
 dead-lettered messages and consumer lag back to 0.
 
+Phase 4 complete — 1m/1h rollups with an enforced cardinality bound. Rollup
+totals match raw exactly; tDigest p95 is within 0.44% of exact; 349k raw rows
+(43 MiB) reduce to 19k rollup rows (3.8 MiB).
+
 Measured over 1.5M rows: pipeline latency (span end → queryable) p50 3.2s /
-p95 8.5s, 8 active MergeTree parts, 2.6x compression, tenant-scoped queries in
-81 ms. Phase 4 (rollups and the cardinality guard) is next.
+p95 8.5s, 2.6x compression, tenant-scoped queries in 81 ms. Phase 5 (Grafana
+dashboards) is next.
 
 ## Requirements
 
@@ -175,10 +179,31 @@ data loss. Lag is the pipeline's primary SLI; dropped spans are counted and
 dashboarded, never hidden.
 
 **Cardinality.** Facts and dimensions are strictly separated. Unbounded
-identifiers (trace_id, request_id, prompt hash) live only in the raw table,
-under a short TTL, and are never grouped by. Rollups may key only on dimensions
-declared in `schemas/clickhouse/dimensions.yaml`; unknown or over-budget tenants
-collapse into an explicit `__other__` bucket at the ingest boundary. The bound
-is enforced in code and asserted in tests, not left to convention.
+identifiers (trace_id, request_id, prompt hash) live only in `spans_raw`, under
+a short TTL, and are never grouped by. Rollups may key only on dimensions
+declared in `schemas/clickhouse/dimensions.yaml`, each with an explicit budget.
+
+Enforcement is a ClickHouse dictionary the rollup views consult per row, so no
+insert path bypasses it. Each dimension resolves to one of three things:
+
+| Outcome | Meaning | Action |
+| --- | --- | --- |
+| the value | registered | — |
+| `__other__` | present but **unregistered** | investigate: shadow deploy, new region, stale allowlist |
+| `__none__` | absent from this span | routine (a tool span has no model) |
+
+Those two sentinels started as one. On live data that single bucket held 18,243
+tool spans with no model next to exactly 300 genuinely unregistered ones — the
+actionable signal was 2% of its own bucket. Splitting them is what makes
+`__other__` worth alerting on.
+
+Verified by emitting 300 unregistered tenants and one unregistered model:
+`spans_raw` keeps all 300 distinct tenants for debugging, `spans_1m` shows one
+`__other__` row and the rogue model never appears at all.
+
+```bash
+telemetry-engine dimensions status    # observed cardinality vs budget
+telemetry-engine rollup-status        # do the rollups cover all of raw?
+```
 
 Full rationale for both, plus measured numbers, lands in `docs/`.

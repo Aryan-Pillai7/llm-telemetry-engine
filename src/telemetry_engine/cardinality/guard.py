@@ -40,6 +40,7 @@ class DimensionStatus:
     budget: int
     observed_distinct: int
     other_bucket_rows: int
+    none_bucket_rows: int
     total_rows: int
 
     @property
@@ -48,18 +49,28 @@ class DimensionStatus:
 
     @property
     def other_share(self) -> float:
-        """Fraction of rows bucketed into `__other__`.
+        """Fraction of rows carrying an UNREGISTERED value.
 
-        A high share means the allowlist is stale: real traffic is going
-        unattributed. That is a signal to re-run the top-K sync or widen a
-        static list, not a failure.
+        The actionable number. A non-zero share means something is emitting a
+        dimension value nobody registered -- a shadow deployment, a new region,
+        or an allowlist that has gone stale. Kept strictly separate from
+        `none_share`, which is normal.
         """
         return self.other_bucket_rows / self.total_rows if self.total_rows else 0.0
 
     @property
+    def none_share(self) -> float:
+        """Fraction of rows where the dimension does not apply at all.
+
+        Expected and benign: a tool span has no model. Reported so it cannot be
+        mistaken for unregistered traffic.
+        """
+        return self.none_bucket_rows / self.total_rows if self.total_rows else 0.0
+
+    @property
     def within_budget(self) -> bool:
-        # +1 for the __other__ bucket itself.
-        return self.observed_distinct <= self.budget + 1
+        # +2 for the two sentinel buckets.
+        return self.observed_distinct <= self.budget + 2
 
 
 @dataclass
@@ -159,10 +170,11 @@ def status(
             f"""
             SELECT
                 uniqExact({dimension.column}),
-                countIf({dimension.column} = %(other)s)
+                countIf({dimension.column} = %(other)s),
+                countIf({dimension.column} = %(none)s)
             FROM {table}
         """,
-            parameters={"other": reg.other_bucket},
+            parameters={"other": reg.other_bucket, "none": reg.none_bucket},
         ).result_rows[0]
 
         allowlisted = int(
@@ -179,6 +191,7 @@ def status(
                 budget=dimension.budget,
                 observed_distinct=int(row[0]),
                 other_bucket_rows=int(row[1]),
+                none_bucket_rows=int(row[2]),
                 total_rows=total,
             )
         )
