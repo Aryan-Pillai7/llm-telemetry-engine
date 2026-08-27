@@ -7,6 +7,7 @@ pipeline should be reachable from here rather than from a pile of loose scripts.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import typer
 
@@ -418,6 +419,91 @@ def monitor(
                 )
         except KeyboardInterrupt:
             typer.echo("  stopped")
+
+
+@app.command("backpressure")
+def backpressure(
+    baseline: float = typer.Option(45.0, help="Seconds of sustained-rate baseline."),
+    burst: float = typer.Option(45.0, help="Seconds of burst above capacity."),
+    recovery: float = typer.Option(120.0, help="Seconds to observe recovery after the burst."),
+    rate: int | None = typer.Option(None, help="Sustained spans/s."),
+    burst_rate: int | None = typer.Option(None, help="Burst spans/s."),
+    workers: int = typer.Option(8, help="Load generator processes."),
+    interval: float = typer.Option(1.0, help="Health sampling interval."),
+    out: str = typer.Option("docs/backpressure-run.json", help="Where to write results."),
+) -> None:
+    """Run the backpressure experiment and report whether it can be trusted.
+
+    Drives a baseline, then a burst above the pipeline's comfortable capacity,
+    then observes recovery -- while probing a real HTTP endpoint throughout,
+    because the claim under test is about what an observed service experiences.
+
+    Every run is graded against pre-registered validity checks. A run that fails
+    any of them prints INVALID and its numbers should not be quoted.
+    """
+    from telemetry_engine.experiments.backpressure import (
+        run_experiment,
+        write_report,
+    )
+
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    result = run_experiment(
+        settings,
+        baseline_s=baseline,
+        burst_s=burst,
+        recovery_s=recovery,
+        sustained_rate=rate or settings.workload.sustained_spans_per_sec,
+        burst_rate=burst_rate or settings.workload.burst_spans_per_sec,
+        workers=workers,
+        sample_interval_s=interval,
+    )
+
+    typer.echo("")
+    typer.echo("  VALIDITY")
+    for check in result.checks:
+        mark = "PASS" if check.passed else "FAIL"
+        color = None if check.passed else typer.colors.RED
+        typer.secho(f"    [{mark}] {check.name}: {check.detail}", fg=color)
+        if not check.passed:
+            typer.secho(f"           would hide: {check.would_hide}", fg=typer.colors.YELLOW)
+
+    baseline_lat = result.probe_latency(0, result.baseline_s)
+    burst_lat = result.probe_latency(*result.burst_window())
+    recovery_time = result.recovery_seconds()
+
+    typer.echo("")
+    typer.echo("  RESULTS")
+    typer.echo(
+        f"    generator:         {result.generator_spans:,} spans "
+        f"({result.generator_achieved_rate:,.0f}/s during burst)"
+    )
+    typer.echo(f"    peak consumer lag: {result.peak_lag:,} messages")
+    typer.echo(
+        "    recovery:          "
+        + (
+            f"{recovery_time:.1f}s after burst end"
+            if recovery_time is not None
+            else "DID NOT RECOVER in the observation window"
+        )
+    )
+    typer.echo(f"    collector dropped: {result.collector_dropped:,}")
+    typer.echo(f"    sdk-side loss:     {result.sdk_lost:,}")
+    typer.echo(f"    unaccounted:       {result.unaccounted:,}")
+    typer.echo("")
+    typer.echo(
+        f"    endpoint p50/p99 baseline: {baseline_lat['p50']:.1f} / {baseline_lat['p99']:.1f} ms"
+    )
+    typer.echo(f"    endpoint p50/p99 burst:    {burst_lat['p50']:.1f} / {burst_lat['p99']:.1f} ms")
+
+    path = write_report(result, Path(out))
+    typer.echo("")
+    if result.valid:
+        typer.secho(f"  RUN VALID - full results in {path}", fg=typer.colors.GREEN)
+    else:
+        typer.secho(f"  RUN INVALID - do not quote these numbers ({path})", fg=typer.colors.RED)
+        raise typer.Exit(1)
 
 
 @app.command()
