@@ -27,6 +27,8 @@ stack_app = typer.Typer(help="Inspect the local docker stack.", no_args_is_help=
 app.add_typer(stack_app, name="stack")
 dims_app = typer.Typer(help="Manage the cardinality allowlist.", no_args_is_help=True)
 app.add_typer(dims_app, name="dimensions")
+cold_app = typer.Typer(help="Parquet cold tier.", no_args_is_help=True)
+app.add_typer(cold_app, name="cold")
 
 log = get_logger(__name__)
 
@@ -419,6 +421,128 @@ def monitor(
                 )
         except KeyboardInterrupt:
             typer.echo("  stopped")
+
+
+@cold_app.command("export")
+def cold_export(
+    max_windows: int | None = typer.Option(None, help="Stop after this many hourly windows."),
+) -> None:
+    """Export raw spans from ClickHouse into hive-partitioned Parquet.
+
+    Exports complete hourly windows since the watermark. The watermark advances
+    only after a file has been written, read back, and verified against the
+    source -- a missed window is permanent, because the hot tier drops raw spans
+    on a 48-hour TTL.
+    """
+    from telemetry_engine.coldtier.export import run_export
+    from telemetry_engine.storage.client import client
+
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    with client(settings.clickhouse) as conn:
+        result = run_export(conn, settings, max_windows=max_windows)
+
+    for window in result.windows:
+        if window.skipped:
+            typer.echo(f"  skipped {window.window.start}: {window.reason}")
+        elif window.ok:
+            typer.echo(
+                f"  exported {window.window.start} -> {window.written_rows:,} rows, "
+                f"{window.bytes_on_disk / 1024 / 1024:.1f} MiB"
+            )
+        else:
+            typer.secho(
+                f"  FAILED {window.window.start}: source={window.source_rows:,} "
+                f"written={window.written_rows:,} verified={window.verified_rows:,}",
+                fg=typer.colors.RED,
+            )
+
+    typer.echo(f"  watermark: {result.watermark_before} -> {result.watermark_after}")
+    typer.echo(f"  {result.rows:,} rows in {result.files} file(s)")
+    if not result.ok:
+        typer.secho(
+            "  export halted on a failed window; watermark left behind it", fg=typer.colors.RED
+        )
+        raise typer.Exit(1)
+
+
+@cold_app.command("status")
+def cold_status() -> None:
+    """Show lake contents and whether the exporter is keeping ahead of the TTL."""
+    from telemetry_engine.coldtier.export import health
+    from telemetry_engine.coldtier.query import stats
+    from telemetry_engine.storage.client import client
+
+    settings = get_settings()
+
+    with client(settings.clickhouse) as conn:
+        export_health = health(conn, settings)
+
+    lake = stats(settings.coldtier.root)
+    typer.echo(f"  root:       {settings.coldtier.root}")
+    typer.echo(f"  files:      {lake.files} across {lake.partitions} partition(s)")
+    typer.echo(f"  rows:       {lake.rows:,}")
+    typer.echo(f"  size:       {lake.mib:.1f} MiB ({lake.bytes_per_row:.1f} bytes/row)")
+    typer.echo(f"  export:     {export_health.describe()}")
+
+    if export_health.at_risk:
+        typer.secho(
+            "  AT RISK: unexported data is approaching the hot-tier TTL and will be "
+            "deleted from ClickHouse whether or not it was copied",
+            fg=typer.colors.RED,
+        )
+
+
+@cold_app.command("verify")
+def cold_verify() -> None:
+    """Check the lake is readable, complete, and actually sorted.
+
+    Sorting is what makes the coarse dt-only partitioning safe. An unsorted lake
+    returns correct answers while reading far more data than it should, which
+    surfaces as nothing at all.
+    """
+    from telemetry_engine.coldtier.query import ColdTierMismatchError, open_lake, verify_sorted
+
+    settings = get_settings()
+    root = settings.coldtier.root
+
+    try:
+        with open_lake(root) as conn:
+            rows = conn.execute("SELECT count(*) FROM spans").fetchone()[0]
+        typer.echo(f"  readable:   yes ({rows:,} rows)")
+    except ColdTierMismatchError as exc:
+        typer.secho(f"  MISMATCH: {exc}", fg=typer.colors.RED)
+        raise typer.Exit(1) from exc
+
+    problems = verify_sorted(root)
+    if problems:
+        for problem in problems:
+            typer.secho(f"  UNSORTED: {problem}", fg=typer.colors.RED)
+        raise typer.Exit(1)
+    typer.echo("  sort order: verified")
+
+
+@cold_app.command("query")
+def cold_query(
+    sql: str = typer.Argument("", help="SQL against the `spans` view. Omit for a summary."),
+) -> None:
+    """Query the lake with DuckDB."""
+    from telemetry_engine.coldtier import query as coldquery
+
+    settings = get_settings()
+    statement = sql or coldquery.DAILY_VOLUME
+
+    with coldquery.open_lake(settings.coldtier.root) as conn:
+        cursor = conn.execute(statement)
+        columns = [d[0] for d in cursor.description]
+        rows = cursor.fetchall()
+
+    typer.echo("  " + " | ".join(columns))
+    for row in rows[:50]:
+        typer.echo("  " + " | ".join(str(v) for v in row))
+    if len(rows) > 50:
+        typer.echo(f"  ... {len(rows) - 50} more rows")
 
 
 @app.command("backpressure")
