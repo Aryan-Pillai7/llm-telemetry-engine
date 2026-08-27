@@ -10,7 +10,7 @@ from __future__ import annotations
 import pytest
 
 from telemetry_engine.config import Settings
-from telemetry_engine.storage.migrations import Migration, discover
+from telemetry_engine.storage.migrations import _COMMENT_RE, Migration, discover
 
 
 def _write(tmp_path, name: str, sql: str) -> Migration:
@@ -118,10 +118,15 @@ def test_shipped_migrations_are_idempotent_ddl() -> None:
 
 
 def test_shipped_migrations_contain_no_semicolons_in_literals() -> None:
-    """The statement splitter is naive; guard the assumption it relies on."""
+    """The statement splitter is naive; guard the assumption it relies on.
+
+    Checked against comment-stripped SQL, matching what the runner actually
+    splits. Prose apostrophes in comments ("the hot tier's TTL") are not string
+    delimiters and must not be treated as such.
+    """
     settings = Settings()
     for migration in discover(settings.schemas_dir):
-        sql = migration.sql
+        sql = _COMMENT_RE.sub("", migration.sql)
         # A semicolon inside quotes would be split incorrectly.
         for quote in ("'", '"'):
             segments = sql.split(quote)

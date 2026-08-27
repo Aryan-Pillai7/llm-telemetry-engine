@@ -35,10 +35,13 @@ tier costs disk, not standing RAM.
 
 ## Status
 
-Phase 2 complete: the stack comes up cold, and synthetic LLM/agent telemetry
-flows into Redpanda at the design rate (measured: 19.7k spans/s against a 20k
-target, 8 workers). Phase 3 (ClickHouse consumption via the Kafka table engine)
-is next.
+Phase 3 complete — the hot path moves data end to end. On a cold stack,
+106,737 emitted spans produced exactly 106,737 rows in ClickHouse, with zero
+dead-lettered messages and consumer lag back to 0.
+
+Measured over 1.5M rows: pipeline latency (span end → queryable) p50 3.2s /
+p95 8.5s, 8 active MergeTree parts, 2.6x compression, tenant-scoped queries in
+81 ms. Phase 4 (rollups and the cardinality guard) is next.
 
 ## Requirements
 
@@ -103,6 +106,23 @@ telemetry-engine bootstrap      # stack wait + topics apply + migrate
 telemetry-engine serve          # mock inference endpoint (demo / manual pokes)
 telemetry-engine load           # synthetic load at a target span rate
 ```
+
+### Seeing data land
+
+```bash
+python tasks.py up                               # stack + topics + schema
+telemetry-engine load --duration 20 --rate 5000  # emit
+# then, after a few seconds:
+```
+```sql
+SELECT tenant_id, count(), quantile(0.95)(ttft_ms)
+FROM telemetry.spans_raw GROUP BY tenant_id ORDER BY 2 DESC LIMIT 5
+```
+
+`spans_raw` is the high-cardinality landing table: one row per span, a 48-hour
+TTL, and an open `attributes` Map so a newly emitted attribute is queryable
+immediately without a schema change. It is for trace debugging and cold-tier
+export — **not** for dashboards, which will read the Phase 4 rollups.
 
 ### Generating telemetry
 
