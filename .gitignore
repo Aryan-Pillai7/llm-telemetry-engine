@@ -216,3 +216,15 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# --- Project-local agent/planning files (never committed) ---
+CLAUDE.md
+plan.md
+decisions.md
+
+# --- Project data / runtime artifacts ---
+data/
+*.duckdb
+*.duckdb.wal
+.clickhouse/
+.redpanda/
