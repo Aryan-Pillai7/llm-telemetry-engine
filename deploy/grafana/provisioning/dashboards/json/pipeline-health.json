@@ -1,0 +1,584 @@
+{
+  "uid": "pipeline-health",
+  "title": "LLM Telemetry - Pipeline Health",
+  "description": "The pipeline observing itself: consumer lag, dropped spans, ingest latency.",
+  "tags": [
+    "llm-telemetry"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "refresh": "10s",
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Consumer lag (current)",
+      "description": "Messages the ClickHouse consumer group has not read. The primary SLI: Redpanda absorbs bursts, so overload appears here as lag rather than loss.",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "clickhouse-telemetry"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 5,
+        "x": 0,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 5000
+              },
+              {
+                "color": "red",
+                "value": 100000
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "clickhouse-telemetry"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "meta": {
+            "builderOptions": {
+              "fields": [],
+              "limit": 100,
+              "mode": "list"
+            }
+          },
+          "queryType": "sql",
+          "rawSql": "SELECT total_lag AS value FROM telemetry.pipeline_health\nORDER BY sampled_at DESC LIMIT 1",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Dropped spans (total)",
+      "description": "Spans the collector dropped rather than backpressuring the endpoint (send-failed + enqueue-failed). Non-zero is expected under burst; it must never be invisible.",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "clickhouse-telemetry"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 5,
+        "x": 5,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "clickhouse-telemetry"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "meta": {
+            "builderOptions": {
+              "fields": [],
+              "limit": 100,
+              "mode": "list"
+            }
+          },
+          "queryType": "sql",
+          "rawSql": "SELECT send_failed_spans + enqueue_failed_spans AS value\nFROM telemetry.pipeline_health ORDER BY sampled_at DESC LIMIT 1",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Export queue",
+      "description": "Collector export queue utilization. At 100% it drops rather than blocks.",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "clickhouse-telemetry"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 5,
+        "x": 10,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {},
+          "unit": "percentunit",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 0.5
+              },
+              {
+                "color": "red",
+                "value": 0.9
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "clickhouse-telemetry"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "meta": {
+            "builderOptions": {
+              "fields": [],
+              "limit": 100,
+              "mode": "list"
+            }
+          },
+          "queryType": "sql",
+          "rawSql": "SELECT queue_size / nullIf(queue_capacity, 0) AS value\nFROM telemetry.pipeline_health ORDER BY sampled_at DESC LIMIT 1",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Refused spans",
+      "description": "Receiver refusals: the memory_limiter shedding load.",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "clickhouse-telemetry"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 4,
+        "x": 15,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 1
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "clickhouse-telemetry"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "meta": {
+            "builderOptions": {
+              "fields": [],
+              "limit": 100,
+              "mode": "list"
+            }
+          },
+          "queryType": "sql",
+          "rawSql": "SELECT refused_spans AS value FROM telemetry.pipeline_health\nORDER BY sampled_at DESC LIMIT 1",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Active parts",
+      "description": "MergeTree parts on spans_raw. Runaway part count is the classic Kafka-engine failure: merges fall behind and inserts start failing.",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "clickhouse-telemetry"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 5,
+        "x": 19,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 300
+              },
+              {
+                "color": "red",
+                "value": 1000
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "clickhouse-telemetry"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "meta": {
+            "builderOptions": {
+              "fields": [],
+              "limit": 100,
+              "mode": "list"
+            }
+          },
+          "queryType": "sql",
+          "rawSql": "SELECT count() AS value FROM system.parts\nWHERE database = 'telemetry' AND table = 'spans_raw' AND active",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Consumer lag over time",
+      "description": "Lag growing then recovering is the system working as designed. Lag that never recovers means ClickHouse cannot keep up at this rate.",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "clickhouse-telemetry"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 5
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {}
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "clickhouse-telemetry"
+          },
+          "editorType": "sql",
+          "format": 2,
+          "meta": {
+            "builderOptions": {
+              "fields": [],
+              "limit": 100,
+              "mode": "list"
+            }
+          },
+          "queryType": "sql",
+          "rawSql": "SELECT sampled_at AS time,\n       total_lag AS \"total lag\",\n       max_partition_lag AS \"worst partition\"\nFROM telemetry.pipeline_health WHERE $__timeFilter(sampled_at)\nORDER BY time",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Dropped spans per sample",
+      "description": "Differenced from the cumulative counter, so a burst of loss is visible as a spike rather than a step in a rising line.",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "clickhouse-telemetry"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 5
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {}
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "clickhouse-telemetry"
+          },
+          "editorType": "sql",
+          "format": 2,
+          "meta": {
+            "builderOptions": {
+              "fields": [],
+              "limit": 100,
+              "mode": "list"
+            }
+          },
+          "queryType": "sql",
+          "rawSql": "SELECT sampled_at AS time,\n       greatest(0, toInt64(send_failed_spans + enqueue_failed_spans)\n                   - toInt64(any(send_failed_spans + enqueue_failed_spans)\n                             OVER (ORDER BY sampled_at ROWS BETWEEN 1 PRECEDING AND 1 PRECEDING)))\n           AS \"dropped\"\nFROM telemetry.pipeline_health WHERE $__timeFilter(sampled_at)\nORDER BY time",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Ingest latency (span end to queryable)",
+      "description": "Measured from span END, not span start: spans are backdated to trace start, so not subtracting duration_ms would report the simulated LLM call as pipeline latency.",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "clickhouse-telemetry"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 14
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {},
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "clickhouse-telemetry"
+          },
+          "editorType": "sql",
+          "format": 2,
+          "meta": {
+            "builderOptions": {
+              "fields": [],
+              "limit": 100,
+              "mode": "list"
+            }
+          },
+          "queryType": "sql",
+          "rawSql": "SELECT toStartOfMinute(ts) AS time,\n       quantile(0.5)((dateDiff('millisecond', ts, ingested_at) - duration_ms) / 1000.0) AS p50,\n       quantile(0.95)((dateDiff('millisecond', ts, ingested_at) - duration_ms) / 1000.0) AS p95\nFROM telemetry.spans_raw\nWHERE $__timeFilter(ts)\nGROUP BY time ORDER BY time",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Collector throughput",
+      "description": "Accepted vs sent, differenced per sample. A widening gap means the exporter is falling behind the receiver.",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "clickhouse-telemetry"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 14
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {}
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "clickhouse-telemetry"
+          },
+          "editorType": "sql",
+          "format": 2,
+          "meta": {
+            "builderOptions": {
+              "fields": [],
+              "limit": 100,
+              "mode": "list"
+            }
+          },
+          "queryType": "sql",
+          "rawSql": "SELECT sampled_at AS time,\n       greatest(0, toInt64(accepted_spans) - toInt64(any(accepted_spans)\n           OVER (ORDER BY sampled_at ROWS BETWEEN 1 PRECEDING AND 1 PRECEDING))) AS \"accepted\",\n       greatest(0, toInt64(sent_spans) - toInt64(any(sent_spans)\n           OVER (ORDER BY sampled_at ROWS BETWEEN 1 PRECEDING AND 1 PRECEDING))) AS \"sent\"\nFROM telemetry.pipeline_health WHERE $__timeFilter(sampled_at)\nORDER BY time",
+          "refId": "A"
+        }
+      ]
+    }
+  ]
+}

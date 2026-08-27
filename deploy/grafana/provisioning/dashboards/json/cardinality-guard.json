@@ -1,0 +1,440 @@
+{
+  "uid": "cardinality-guard",
+  "title": "LLM Telemetry - Cardinality Guard",
+  "description": "Is the cardinality bound holding, and is anything unregistered emitting?",
+  "tags": [
+    "llm-telemetry"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "refresh": "1m",
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "UNREGISTERED spans (__other__)",
+      "description": "Spans carrying a dimension value that is not on the allowlist. ANY non-zero value is actionable: a shadow deployment, a new region, or a stale allowlist. Shown as an absolute count, never a share.",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "clickhouse-telemetry"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 7,
+        "x": 0,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "clickhouse-telemetry"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "meta": {
+            "builderOptions": {
+              "fields": [],
+              "limit": 100,
+              "mode": "list"
+            }
+          },
+          "queryType": "sql",
+          "rawSql": "SELECT countMergeIf(spans, tenant_id = '__other__') + countMergeIf(spans, tenant_tier = '__other__') + countMergeIf(spans, model = '__other__') + countMergeIf(spans, operation = '__other__') + countMergeIf(spans, route = '__other__') + countMergeIf(spans, region = '__other__') + countMergeIf(spans, status_class = '__other__') AS value FROM telemetry.spans_1m WHERE $__timeFilter(ts_minute)",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Absent dimensions (__none__) - routine",
+      "description": "Spans that simply do not carry a dimension: a tool span has no model. Expected and ignorable. Kept in its own panel because merging it with __other__ is what previously hid 300 unregistered spans behind 18,243 routine ones.",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "clickhouse-telemetry"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 7,
+        "x": 7,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {}
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "none",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "clickhouse-telemetry"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "meta": {
+            "builderOptions": {
+              "fields": [],
+              "limit": 100,
+              "mode": "list"
+            }
+          },
+          "queryType": "sql",
+          "rawSql": "SELECT countMergeIf(spans, tenant_id = '__none__') + countMergeIf(spans, tenant_tier = '__none__') + countMergeIf(spans, model = '__none__') + countMergeIf(spans, operation = '__none__') + countMergeIf(spans, route = '__none__') + countMergeIf(spans, region = '__none__') + countMergeIf(spans, status_class = '__none__') AS value FROM telemetry.spans_1m WHERE $__timeFilter(ts_minute)",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Rollup rows / minute",
+      "description": "Worst minute in range. Declared bound is 7,565,788,800 (product of budgets + 2 sentinels) -- a true but loose ceiling, since dimensions correlate heavily in practice.",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "clickhouse-telemetry"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 5,
+        "x": 14,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {}
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "clickhouse-telemetry"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "meta": {
+            "builderOptions": {
+              "fields": [],
+              "limit": 100,
+              "mode": "list"
+            }
+          },
+          "queryType": "sql",
+          "rawSql": "SELECT max(n) AS value FROM (\n  SELECT ts_minute, count() AS n FROM telemetry.spans_1m WHERE $__timeFilter(ts_minute) GROUP BY ts_minute\n)",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Rollup compression",
+      "description": "Raw rows per rollup row. If this is near 1, the rollup is not earning its storage.",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "clickhouse-telemetry"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 5,
+        "x": 19,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {}
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "clickhouse-telemetry"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "meta": {
+            "builderOptions": {
+              "fields": [],
+              "limit": 100,
+              "mode": "list"
+            }
+          },
+          "queryType": "sql",
+          "rawSql": "SELECT round(\n    (SELECT sum(rows) FROM system.parts\n     WHERE database='telemetry' AND table='spans_raw' AND active)\n  / nullIf((SELECT sum(rows) FROM system.parts\n     WHERE database='telemetry' AND table='spans_1m' AND active), 0), 1) AS value",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "table",
+      "title": "Which values are unregistered?",
+      "description": "The offender, by name. Reads spans_raw, because the rollup has already replaced the value with a sentinel -- by then the information needed to act on it is gone by design. This panel is why a 0.6% __other__ share does not require anyone to think to investigate.",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "clickhouse-telemetry"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 12,
+        "x": 0,
+        "y": 6
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {}
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "clickhouse-telemetry"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "meta": {
+            "builderOptions": {
+              "fields": [],
+              "limit": 100,
+              "mode": "list"
+            }
+          },
+          "queryType": "sql",
+          "rawSql": "SELECT * FROM (\nSELECT 'tenant_id' AS \"dimension\", tenant_id AS \"value\", count() AS \"spans\"\nFROM telemetry.spans_raw\nWHERE $__timeFilter(ts)\n  AND tenant_id != ''\n  AND NOT dictHas('telemetry.dim_allowlist_dict', ('tenant_id', tenant_id))\nGROUP BY \"value\"\nUNION ALL\nSELECT 'tenant_tier' AS \"dimension\", tenant_tier AS \"value\", count() AS \"spans\"\nFROM telemetry.spans_raw\nWHERE $__timeFilter(ts)\n  AND tenant_tier != ''\n  AND NOT dictHas('telemetry.dim_allowlist_dict', ('tenant_tier', tenant_tier))\nGROUP BY \"value\"\nUNION ALL\nSELECT 'model' AS \"dimension\", model AS \"value\", count() AS \"spans\"\nFROM telemetry.spans_raw\nWHERE $__timeFilter(ts)\n  AND model != ''\n  AND NOT dictHas('telemetry.dim_allowlist_dict', ('model', model))\nGROUP BY \"value\"\nUNION ALL\nSELECT 'operation' AS \"dimension\", operation AS \"value\", count() AS \"spans\"\nFROM telemetry.spans_raw\nWHERE $__timeFilter(ts)\n  AND operation != ''\n  AND NOT dictHas('telemetry.dim_allowlist_dict', ('operation', operation))\nGROUP BY \"value\"\nUNION ALL\nSELECT 'route' AS \"dimension\", route AS \"value\", count() AS \"spans\"\nFROM telemetry.spans_raw\nWHERE $__timeFilter(ts)\n  AND route != ''\n  AND NOT dictHas('telemetry.dim_allowlist_dict', ('route', route))\nGROUP BY \"value\"\nUNION ALL\nSELECT 'region' AS \"dimension\", region AS \"value\", count() AS \"spans\"\nFROM telemetry.spans_raw\nWHERE $__timeFilter(ts)\n  AND region != ''\n  AND NOT dictHas('telemetry.dim_allowlist_dict', ('region', region))\nGROUP BY \"value\"\nUNION ALL\nSELECT 'status_class' AS \"dimension\", status_class AS \"value\", count() AS \"spans\"\nFROM telemetry.spans_raw\nWHERE $__timeFilter(ts)\n  AND status_class != ''\n  AND NOT dictHas('telemetry.dim_allowlist_dict', ('status_class', status_class))\nGROUP BY \"value\"\n) ORDER BY \"spans\" DESC LIMIT 50",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "table",
+      "title": "Bucket breakdown by dimension",
+      "description": "Three separate columns on purpose. A single 'bucketed %' column would average an actionable signal into a routine one.",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "clickhouse-telemetry"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 12,
+        "x": 12,
+        "y": 6
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {}
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "UNREGISTERED"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "red",
+                      "value": 1
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "clickhouse-telemetry"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "meta": {
+            "builderOptions": {
+              "fields": [],
+              "limit": 100,
+              "mode": "list"
+            }
+          },
+          "queryType": "sql",
+          "rawSql": "SELECT * FROM (\nSELECT 'tenant_id' AS \"dimension\",\n       countMergeIf(spans, tenant_id NOT IN ('__other__', '__none__')) AS \"registered\",\n       countMergeIf(spans, tenant_id = '__other__') AS \"UNREGISTERED\",\n       countMergeIf(spans, tenant_id = '__none__') AS \"absent (routine)\",\n       uniqExactIf(tenant_id, tenant_id NOT IN ('__other__', '__none__')) AS \"distinct values\",\n       200 AS \"budget\"\nFROM telemetry.spans_1m\nWHERE $__timeFilter(ts_minute)\nUNION ALL\nSELECT 'tenant_tier' AS \"dimension\",\n       countMergeIf(spans, tenant_tier NOT IN ('__other__', '__none__')) AS \"registered\",\n       countMergeIf(spans, tenant_tier = '__other__') AS \"UNREGISTERED\",\n       countMergeIf(spans, tenant_tier = '__none__') AS \"absent (routine)\",\n       uniqExactIf(tenant_tier, tenant_tier NOT IN ('__other__', '__none__')) AS \"distinct values\",\n       8 AS \"budget\"\nFROM telemetry.spans_1m\nWHERE $__timeFilter(ts_minute)\nUNION ALL\nSELECT 'model' AS \"dimension\",\n       countMergeIf(spans, model NOT IN ('__other__', '__none__')) AS \"registered\",\n       countMergeIf(spans, model = '__other__') AS \"UNREGISTERED\",\n       countMergeIf(spans, model = '__none__') AS \"absent (routine)\",\n       uniqExactIf(model, model NOT IN ('__other__', '__none__')) AS \"distinct values\",\n       32 AS \"budget\"\nFROM telemetry.spans_1m\nWHERE $__timeFilter(ts_minute)\nUNION ALL\nSELECT 'operation' AS \"dimension\",\n       countMergeIf(spans, operation NOT IN ('__other__', '__none__')) AS \"registered\",\n       countMergeIf(spans, operation = '__other__') AS \"UNREGISTERED\",\n       countMergeIf(spans, operation = '__none__') AS \"absent (routine)\",\n       uniqExactIf(operation, operation NOT IN ('__other__', '__none__')) AS \"distinct values\",\n       16 AS \"budget\"\nFROM telemetry.spans_1m\nWHERE $__timeFilter(ts_minute)\nUNION ALL\nSELECT 'route' AS \"dimension\",\n       countMergeIf(spans, route NOT IN ('__other__', '__none__')) AS \"registered\",\n       countMergeIf(spans, route = '__other__') AS \"UNREGISTERED\",\n       countMergeIf(spans, route = '__none__') AS \"absent (routine)\",\n       uniqExactIf(route, route NOT IN ('__other__', '__none__')) AS \"distinct values\",\n       32 AS \"budget\"\nFROM telemetry.spans_1m\nWHERE $__timeFilter(ts_minute)\nUNION ALL\nSELECT 'region' AS \"dimension\",\n       countMergeIf(spans, region NOT IN ('__other__', '__none__')) AS \"registered\",\n       countMergeIf(spans, region = '__other__') AS \"UNREGISTERED\",\n       countMergeIf(spans, region = '__none__') AS \"absent (routine)\",\n       uniqExactIf(region, region NOT IN ('__other__', '__none__')) AS \"distinct values\",\n       16 AS \"budget\"\nFROM telemetry.spans_1m\nWHERE $__timeFilter(ts_minute)\nUNION ALL\nSELECT 'status_class' AS \"dimension\",\n       countMergeIf(spans, status_class NOT IN ('__other__', '__none__')) AS \"registered\",\n       countMergeIf(spans, status_class = '__other__') AS \"UNREGISTERED\",\n       countMergeIf(spans, status_class = '__none__') AS \"absent (routine)\",\n       uniqExactIf(status_class, status_class NOT IN ('__other__', '__none__')) AS \"distinct values\",\n       8 AS \"budget\"\nFROM telemetry.spans_1m\nWHERE $__timeFilter(ts_minute)\n) ORDER BY \"UNREGISTERED\" DESC",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Unregistered spans over time, by dimension",
+      "description": "__none__ is excluded from this query by construction, so a routine bucket cannot swamp the series. A step change here means someone deployed something the registry does not know about.",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "clickhouse-telemetry"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 16
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {}
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "clickhouse-telemetry"
+          },
+          "editorType": "sql",
+          "format": 2,
+          "meta": {
+            "builderOptions": {
+              "fields": [],
+              "limit": 100,
+              "mode": "list"
+            }
+          },
+          "queryType": "sql",
+          "rawSql": "SELECT ts_minute AS time,\n       countMergeIf(spans, tenant_id = '__other__') AS \"tenant_id\", countMergeIf(spans, tenant_tier = '__other__') AS \"tenant_tier\", countMergeIf(spans, model = '__other__') AS \"model\", countMergeIf(spans, operation = '__other__') AS \"operation\", countMergeIf(spans, route = '__other__') AS \"route\", countMergeIf(spans, region = '__other__') AS \"region\", countMergeIf(spans, status_class = '__other__') AS \"status_class\"\nFROM telemetry.spans_1m WHERE $__timeFilter(ts_minute)\nGROUP BY time ORDER BY time",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "text",
+      "title": "How to read this dashboard",
+      "gridPos": {
+        "h": 6,
+        "w": 24,
+        "x": 0,
+        "y": 25
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "**`__other__` is actionable. `__none__` is not. They are never combined.**\n\n- **`__other__`** \u2014 the span carried a dimension value that is not on the\n  allowlist. Something is emitting data the registry does not know about: a\n  shadow deployment, a new region, or an allowlist that has gone stale. Fix by\n  registering the value in `schemas/clickhouse/dimensions.yaml` and running\n  `telemetry-engine dimensions apply`, or by fixing the emitter.\n- **`__none__`** \u2014 the span does not carry that dimension at all. A tool span\n  has no model; an embeddings call has no completion. Routine.\n\nThese were one bucket until it was measured: 18,243 routine tool spans shared\nit with exactly 300 genuinely unregistered ones, so the totals looked healthy\nwhile the actionable signal was 2% of its own bucket. Every panel here is built\nso that cannot recur \u2014 absolute counts rather than shares, separate series, and\na panel that names the offending value instead of reporting a percentage."
+      }
+    }
+  ]
+}

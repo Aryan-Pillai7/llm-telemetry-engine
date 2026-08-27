@@ -374,6 +374,52 @@ def rollup_backfill(
     typer.echo(f"  aggregated {aggregated:,} raw spans")
 
 
+@app.command("dashboards")
+def dashboards_build() -> None:
+    """Regenerate Grafana dashboard JSON from the builder.
+
+    Dashboards are generated so a panel's query lives next to the reasoning for
+    it, and so shared expressions have one definition. Generated files are
+    committed; Grafana provisioning picks them up within 30s.
+    """
+    from telemetry_engine.dashboards import write_all
+
+    for path in write_all():
+        typer.echo(f"  wrote {path.relative_to(get_settings().schemas_dir.parents[1])}")
+
+
+@app.command()
+def monitor(
+    interval: float = typer.Option(5.0, help="Seconds between samples."),
+    duration: float | None = typer.Option(None, help="Stop after this many seconds."),
+) -> None:
+    """Sample consumer lag and collector counters into telemetry.pipeline_health.
+
+    Run this alongside a load test. Lag is the pipeline's primary SLI: under
+    this design's backpressure model, overload appears here before it appears
+    anywhere else.
+    """
+    from telemetry_engine.ingest.lag import monitor as monitor_loop
+    from telemetry_engine.storage.client import client
+
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    typer.echo(f"  sampling every {interval}s (ctrl-c to stop)")
+    with client(settings.clickhouse) as conn:
+        try:
+            for lag, collector in monitor_loop(
+                conn, settings, interval_s=interval, duration_s=duration
+            ):
+                typer.echo(
+                    f"  lag={lag.total_lag:>8,}  max_partition={lag.max_partition_lag:>7,}  "
+                    f"queue={collector.queue_size}/{collector.queue_capacity}  "
+                    f"dropped={collector.dropped_spans:,}"
+                )
+        except KeyboardInterrupt:
+            typer.echo("  stopped")
+
+
 @app.command()
 def bootstrap() -> None:
     """Bring a freshly started stack to a usable state: topics, schema, allowlist."""
