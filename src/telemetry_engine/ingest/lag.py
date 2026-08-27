@@ -21,7 +21,8 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 
-from confluent_kafka import Consumer, TopicPartition
+from confluent_kafka import Consumer, ConsumerGroupTopicPartitions, TopicPartition
+from confluent_kafka.admin import AdminClient
 
 from telemetry_engine.common.logging import get_logger
 from telemetry_engine.config import RedpandaSettings, Settings
@@ -92,31 +93,40 @@ class CollectorSnapshot:
 
 
 def read_lag(settings: RedpandaSettings, *, group: str = "clickhouse-spans") -> LagSnapshot:
-    """Read committed offsets against high watermarks for the consumer group.
+    """Read committed offsets against high watermarks, without joining the group.
 
-    Creates a consumer in the target group but never subscribes or assigns, so
-    it does not join the group and cannot trigger a rebalance of ClickHouse's
-    consumers.
+    Committed offsets come from an AdminClient RPC rather than from a Consumer
+    constructed with the target group id. The earlier version did the latter and
+    never subscribed, on the assumption that not subscribing means not joining.
+    Measured across a 45s baseline, the consumer group rebalanced anyway -- so
+    the lag reader was perturbing the very group whose lag it reported.
+
+    Watermarks still need a consumer, but that one uses a throwaway group id and
+    therefore cannot disturb ClickHouse's assignment.
     """
-    consumer = Consumer(
+    admin = AdminClient({"bootstrap.servers": settings.bootstrap_servers})
+    probe = Consumer(
         {
             "bootstrap.servers": settings.bootstrap_servers,
-            "group.id": group,
+            # Deliberately NOT the target group.
+            "group.id": f"lag-probe-{time.time_ns()}",
             "enable.auto.commit": False,
         }
     )
     snapshot = LagSnapshot()
     try:
-        metadata = consumer.list_topics(settings.spans_topic, timeout=30.0)
+        metadata = probe.list_topics(settings.spans_topic, timeout=30.0)
         topic = metadata.topics.get(settings.spans_topic)
         if topic is None or topic.error:
             return snapshot
 
-        partitions = [TopicPartition(settings.spans_topic, p) for p in topic.partitions]
-        committed = consumer.committed(partitions, timeout=30.0)
+        request = ConsumerGroupTopicPartitions(
+            group, [TopicPartition(settings.spans_topic, p) for p in topic.partitions]
+        )
+        committed = admin.list_consumer_group_offsets([request])[group].result(timeout=30.0)
 
-        for tp in committed:
-            _, high = consumer.get_watermark_offsets(tp, timeout=30.0, cached=False)
+        for tp in committed.topic_partitions:
+            _, high = probe.get_watermark_offsets(tp, timeout=30.0, cached=False)
             # A partition with no committed offset yet reports a negative
             # sentinel; treat that as "everything is outstanding".
             position = tp.offset if tp.offset >= 0 else 0
@@ -126,15 +136,22 @@ def read_lag(settings: RedpandaSettings, *, group: str = "clickhouse-spans") -> 
         snapshot.total_lag = sum(snapshot.per_partition.values())
         return snapshot
     finally:
-        consumer.close()
+        probe.close()
 
 
-def read_collector(url: str = COLLECTOR_METRICS_URL) -> CollectorSnapshot:
-    """Scrape the collector's Prometheus endpoint.
+def read_collector(url: str = COLLECTOR_METRICS_URL) -> CollectorSnapshot | None:
+    """Scrape the collector's Prometheus endpoint. None if it is unreachable.
 
-    Returns zeros if the collector is unreachable rather than raising: a
-    monitoring sampler that dies when one of its sources blips is worse than one
-    that records a gap.
+    Returns None rather than a zeroed snapshot, which is what this used to do.
+    Zeros are indistinguishable from a real reading of a freshly started
+    collector, so a single timed-out scrape looked like every cumulative counter
+    resetting to zero -- which is exactly the "collector restarted" condition the
+    experiment checks for. One scrape timeout invalidated an otherwise clean run,
+    and had the check not existed it would instead have silently zeroed the drop
+    count for that sample.
+
+    A caller that wants a gap should record a gap. It must not be handed
+    fabricated data that reads as measurement.
     """
     values: dict[str, float] = {}
     try:
@@ -142,7 +159,7 @@ def read_collector(url: str = COLLECTOR_METRICS_URL) -> CollectorSnapshot:
             body = response.read().decode("utf-8", errors="replace")
     except (urllib.error.URLError, OSError) as exc:
         log.warning("collector_metrics_unreachable", url=url, error=str(exc))
-        return CollectorSnapshot()
+        return None
 
     for line in body.splitlines():
         if line.startswith("#"):
@@ -165,14 +182,22 @@ def read_collector(url: str = COLLECTOR_METRICS_URL) -> CollectorSnapshot:
     )
 
 
-def sample(settings: Settings) -> tuple[LagSnapshot, CollectorSnapshot]:
-    """Take one reading of both sources."""
+def sample(settings: Settings) -> tuple[LagSnapshot, CollectorSnapshot | None]:
+    """Take one reading of both sources. The collector half may be None."""
     return read_lag(settings.redpanda), read_collector()
 
 
 def record(conn, settings: Settings) -> tuple[LagSnapshot, CollectorSnapshot]:
-    """Take a reading and write it to telemetry.pipeline_health."""
+    """Take a reading and write it to telemetry.pipeline_health.
+
+    A failed collector scrape is skipped rather than written as zeros; the row
+    would otherwise be indistinguishable from a real reading.
+    """
     lag, collector = sample(settings)
+    if collector is None:
+        collector = CollectorSnapshot()
+        log.warning("skipping_health_row", reason="collector scrape failed")
+        return lag, collector
     conn.insert(
         "telemetry.pipeline_health",
         [

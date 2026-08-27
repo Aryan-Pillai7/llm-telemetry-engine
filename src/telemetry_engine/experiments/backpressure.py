@@ -74,7 +74,7 @@ from telemetry_engine.config import Settings
 from telemetry_engine.emitters.load import run_load
 from telemetry_engine.emitters.otlp import ExporterConfig
 from telemetry_engine.emitters.workload import LoadProfile, Profile
-from telemetry_engine.ingest.lag import CollectorSnapshot, read_collector, read_lag
+from telemetry_engine.ingest.lag import read_collector, read_lag
 from telemetry_engine.storage.client import client
 
 log = get_logger(__name__)
@@ -358,6 +358,12 @@ class HealthSampler:
             try:
                 lag = read_lag(self.settings.redpanda)
                 collector = read_collector()
+                if collector is None:
+                    # Record nothing rather than zeros: a fabricated sample reads
+                    # as a counter reset and invalidates the whole run.
+                    log.warning("sample_skipped", reason="collector scrape failed")
+                    self._stop.wait(max(0.0, self.interval))
+                    continue
                 self.samples.append(
                     Sample(
                         t=started - self._t0,
@@ -653,7 +659,9 @@ def run_experiment(
                 conn.query("SELECT count() FROM telemetry.spans_raw").result_rows[0][0]
             )
 
-        before: CollectorSnapshot = read_collector()
+        before = read_collector()
+        if before is None:
+            raise RuntimeError("collector metrics unreachable; cannot establish a baseline")
 
         # perf_counter throughout: see the module docstring on ONE CLOCK.
         t0 = time.perf_counter()
@@ -732,6 +740,8 @@ def run_experiment(
         time.sleep(settle_s)
 
         after = read_collector()
+        if after is None:
+            raise RuntimeError("collector metrics unreachable at the end of the run")
         result.collector_refused = after.refused_spans - before.refused_spans
         result.collector_accepted = after.accepted_spans - before.accepted_spans
         result.collector_sent = after.sent_spans - before.sent_spans
