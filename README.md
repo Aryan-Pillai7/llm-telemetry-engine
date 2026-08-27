@@ -35,9 +35,10 @@ tier costs disk, not standing RAM.
 
 ## Status
 
-Phases 0–6 complete. The hot path ingests, aggregates under an enforced
+Phases 0–7 complete. The hot path ingests, aggregates under an enforced
 cardinality bound, and is dashboarded; the backpressure claim has been measured
-rather than asserted. Phase 7 (cold tier) is in progress.
+rather than asserted; and raw spans age out into a verified Parquet cold tier
+queried by DuckDB.
 
 ### Throughput: the honest number
 
@@ -66,9 +67,14 @@ more useful than the number was.
 | Rollup fidelity | totals match raw exactly; tDigest p95 within 0.44% |
 | Rollup reduction | 349k raw rows (43 MiB) → 19k rollup rows (3.8 MiB) |
 | Tenant-scoped query on 1.7M rows | 81 ms |
+| Cold tier | 5.7M rows, 276 MiB, 50.5 bytes/row |
+| Cold-tier tenant-scoped query | 55 ms |
+| At-least-once duplication in the lake | 4.9% (both views published) |
 
 Full backpressure method and the four INVALID runs that preceded the valid one:
-[docs/backpressure.md](docs/backpressure.md).
+[docs/backpressure.md](docs/backpressure.md). Cold-tier design, the
+at-least-once finding, and the bugs the pre-mortem surfaced:
+[docs/coldtier.md](docs/coldtier.md).
 
 ## Requirements
 

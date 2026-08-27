@@ -27,6 +27,7 @@ from telemetry_engine.common.logging import get_logger
 log = get_logger(__name__)
 
 VIEW = "spans"
+DEDUPED_VIEW = "spans_deduped"
 
 
 class ColdTierMismatchError(RuntimeError):
@@ -58,12 +59,35 @@ def _create_view(conn: duckdb.DuckDBPyConnection, root: Path) -> None:
     date filter prunes whole directories without opening their files. Without
     it every query reads every partition and the layout achieves nothing.
     """
+    # The glob is inlined rather than bound: DuckDB cannot prepare a CREATE VIEW
+    # statement and rejects a parameter here. The value is a path this process
+    # constructs from configuration, never user input; the quote doubling is
+    # belt-and-braces for a directory name containing an apostrophe.
+    pattern = glob_pattern(root).replace("'", "''")
     conn.execute(
         f"""
         CREATE OR REPLACE VIEW {VIEW} AS
-        SELECT * FROM read_parquet(?, hive_partitioning = 1, union_by_name = true)
-        """,
-        [glob_pattern(root)],
+        SELECT * FROM read_parquet('{pattern}', hive_partitioning = 1, union_by_name = true)
+        """
+    )
+
+    # The pipeline is at-least-once, not exactly-once (see docs/coldtier.md).
+    # ClickHouse's Kafka engine can redeliver a message -- observed after the
+    # consumer was paused and resumed during the backpressure experiment, where
+    # one window held 209,790 rows for 173,570 distinct span ids.
+    #
+    # Both views are offered rather than silently picking one. `spans` is what
+    # was actually ingested, which is the right basis for pipeline questions;
+    # `spans_deduped` is one row per span, which is the right basis for
+    # analytics. A single view would force one of those to be quietly wrong.
+    conn.execute(
+        f"""
+        CREATE OR REPLACE VIEW {DEDUPED_VIEW} AS
+        SELECT * EXCLUDE (rn) FROM (
+            SELECT *, row_number() OVER (PARTITION BY span_id ORDER BY ts) AS rn
+            FROM {VIEW}
+        ) WHERE rn = 1
+        """
     )
 
 
@@ -81,6 +105,7 @@ def open_lake(root: Path, *, verify: bool = True) -> Iterator[duckdb.DuckDBPyCon
             # read_parquet raises on an empty glob. Give callers a typed empty
             # view so queries return no rows instead of failing.
             conn.execute(f"CREATE VIEW {VIEW} AS SELECT NULL AS ts WHERE false")
+            conn.execute(f"CREATE VIEW {DEDUPED_VIEW} AS SELECT NULL AS ts WHERE false")
             yield conn
             return
 
@@ -143,6 +168,34 @@ def verify_sorted(root: Path, *, sample_files: int = 3) -> list[str]:
         if out_of_order:
             problems.append(f"{path.name}: {out_of_order} rows break tenant_id ordering")
     return problems
+
+
+@dataclass(frozen=True)
+class DuplicationReport:
+    """How much redelivery the lake contains."""
+
+    rows: int
+    distinct_spans: int
+
+    @property
+    def duplicates(self) -> int:
+        return self.rows - self.distinct_spans
+
+    @property
+    def duplicate_share(self) -> float:
+        return self.duplicates / self.rows if self.rows else 0.0
+
+
+def duplication(root: Path) -> DuplicationReport:
+    """Measure at-least-once redelivery in the lake.
+
+    Reported rather than silently removed: the size of this number is a fact
+    about the pipeline, and hiding it behind a deduplicating view would make a
+    real property of the system invisible.
+    """
+    with open_lake(root) as conn:
+        row = conn.execute(f"SELECT count(*), count(DISTINCT span_id) FROM {VIEW}").fetchone()
+    return DuplicationReport(rows=int(row[0]), distinct_spans=int(row[1]))
 
 
 def query(root: Path, sql: str) -> list[tuple]:

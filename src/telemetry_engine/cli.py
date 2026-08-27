@@ -426,6 +426,11 @@ def monitor(
 @cold_app.command("export")
 def cold_export(
     max_windows: int | None = typer.Option(None, help="Stop after this many hourly windows."),
+    since: str | None = typer.Option(
+        None,
+        help="Force re-export from this timestamp (YYYY-MM-DD HH:MM:SS). "
+        "Needed when the lake was deleted or restored while the watermark stayed put.",
+    ),
 ) -> None:
     """Export raw spans from ClickHouse into hive-partitioned Parquet.
 
@@ -440,8 +445,12 @@ def cold_export(
     settings = get_settings()
     configure_logging(settings.log_level)
 
+    from datetime import datetime as _dt
+
+    rewind_to = _dt.strptime(since, "%Y-%m-%d %H:%M:%S") if since else None
+
     with client(settings.clickhouse) as conn:
-        result = run_export(conn, settings, max_windows=max_windows)
+        result = run_export(conn, settings, max_windows=max_windows, since=rewind_to)
 
     for window in result.windows:
         if window.skipped:
@@ -486,7 +495,14 @@ def cold_status() -> None:
     typer.echo(f"  size:       {lake.mib:.1f} MiB ({lake.bytes_per_row:.1f} bytes/row)")
     typer.echo(f"  export:     {export_health.describe()}")
 
-    if export_health.at_risk:
+    if export_health.watermark_without_data:
+        typer.secho(
+            "  INCONSISTENT: the watermark claims windows are exported but the lake is "
+            "empty. Those windows will never be re-exported and the hot tier will drop "
+            "them on schedule. Re-run with --since to rewind.",
+            fg=typer.colors.RED,
+        )
+    elif export_health.at_risk:
         typer.secho(
             "  AT RISK: unexported data is approaching the hot-tier TTL and will be "
             "deleted from ClickHouse whether or not it was copied",

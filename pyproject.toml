@@ -20,6 +20,10 @@ dependencies = [
     # Storage clients
     "clickhouse-connect>=0.7",
     "duckdb>=1.0",
+    # DuckDB needs pytz to convert timestamp columns into Python datetimes.
+    # Without it any cold-tier query that returns a ts fails at fetch time --
+    # after the query has run, which makes it look like a data problem.
+    "pytz>=2024.1",
     "pyarrow>=16.0",
     # Ingest-side admin (topic reconcile, consumer lag SLI)
     "confluent-kafka>=2.4",

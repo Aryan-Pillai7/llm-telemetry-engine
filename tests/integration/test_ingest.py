@@ -234,14 +234,27 @@ def test_consumer_group_is_not_stalled(settings: Settings) -> None:
                 num_messages_read,
                 num_commits,
                 length(assignments.partition_id) AS partitions,
-                arrayStringConcat(`exceptions.text`, ' | ') AS errors
+                -- Only RECENT exceptions. A consumer that hit an error, shed to
+                -- the dead-letter table and recovered is healthy; system.kafka_
+                -- consumers keeps the last 10 exceptions forever, so asserting
+                -- on all of them leaves the test permanently red after any past
+                -- blip -- and a permanently red test is one nobody reads.
+                arrayStringConcat(
+                    arrayFilter(
+                        (text, time) -> time > now() - INTERVAL 5 MINUTE,
+                        `exceptions.text`, `exceptions.time`
+                    ), ' | '
+                ) AS recent_errors,
+                dateDiff('second', last_commit_time, now()) AS seconds_since_commit
             FROM system.kafka_consumers
             WHERE database = 'telemetry' AND table = 'kafka_spans'
         """).result_rows
 
     assert rows, "no Kafka consumers registered; the Kafka table may not exist"
-    for consumer_id, messages_read, commits, partitions, errors in rows:
-        assert not errors, f"{consumer_id} reported an exception: {errors}"
+    for consumer_id, messages_read, commits, partitions, errors, since_commit in rows:
+        assert not errors, f"{consumer_id} reported a recent exception: {errors}"
+        # The real liveness signal: a stalled consumer stops committing.
+        assert since_commit < 300, f"{consumer_id} has not committed for {since_commit}s"
         assert int(messages_read) > 0, f"{consumer_id} has read nothing at all"
         # Committing offsets is what distinguishes a working consumer from one
         # that reads and then fails inside the materialized view.
