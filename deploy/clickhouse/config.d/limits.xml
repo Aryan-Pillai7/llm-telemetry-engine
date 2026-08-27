@@ -28,6 +28,20 @@
          serializes and lag grows for reasons that look like broker trouble. -->
     <background_message_broker_schedule_pool_size>8</background_message_broker_schedule_pool_size>
 
+    <merge_tree>
+        <!-- These thresholds reserve free slots in the merge pool before
+             ClickHouse will start a mutation or a whole-partition optimize.
+             Their defaults (20 and 25) assume the default pool of 64; against
+             the small pool above, ClickHouse refuses to start rather than
+             deadlock. Scaled down to match rather than inflating the pool,
+             because merge threads on a laptop compete with the ingest path.
+             The sanity check is: this value must be <= background_pool_size *
+             background_merges_mutations_concurrency_ratio (8 * 2 = 16). -->
+        <number_of_free_entries_in_pool_to_execute_mutation>4</number_of_free_entries_in_pool_to_execute_mutation>
+        <number_of_free_entries_in_pool_to_execute_optimize_entire_partition>4</number_of_free_entries_in_pool_to_execute_optimize_entire_partition>
+        <number_of_free_entries_in_pool_to_lower_max_size_of_merge>2</number_of_free_entries_in_pool_to_lower_max_size_of_merge>
+    </merge_tree>
+
     <logger>
         <level>information</level>
         <console>1</console>

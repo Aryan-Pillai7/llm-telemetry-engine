@@ -22,6 +22,8 @@ app = typer.Typer(
 )
 topics_app = typer.Typer(help="Manage Redpanda topics.", no_args_is_help=True)
 app.add_typer(topics_app, name="topics")
+stack_app = typer.Typer(help="Inspect the local docker stack.", no_args_is_help=True)
+app.add_typer(stack_app, name="stack")
 
 log = get_logger(__name__)
 
@@ -121,9 +123,44 @@ def topics_list() -> None:
             typer.echo(f"  {name}: {len(topic.partitions)} partition(s)")
 
 
+@stack_app.command("wait")
+def stack_wait(
+    timeout: float = typer.Option(90.0, help="Seconds to wait for each service."),
+) -> None:
+    """Wait until every service the pipeline talks to is actually ready.
+
+    Compose's `--wait` covers the services with healthchecks. The collector is
+    distroless and cannot carry one, so it is probed here from the host.
+    """
+    from telemetry_engine.common.health import wait_for_http
+    from telemetry_engine.storage.client import wait_until_ready
+
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    wait_until_ready(settings.clickhouse, timeout_s=timeout)
+    typer.echo("  clickhouse: ready")
+
+    wait_for_http(
+        "http://localhost:13133/",
+        predicate=lambda body: "StatusOK" in body or "Server available" in body,
+        timeout_s=timeout,
+        name="otel collector",
+    )
+    typer.echo("  otelcol: ready")
+
+    wait_for_http(
+        "http://localhost:8888/metrics",
+        timeout_s=timeout,
+        name="otel collector self-telemetry",
+    )
+    typer.echo("  otelcol self-telemetry: ready")
+
+
 @app.command()
 def bootstrap() -> None:
     """Bring a freshly started stack to a usable state: topics, then schema."""
+    stack_wait(timeout=90.0)
     topics_apply(dry_run=False)
     migrate(dry_run=False, wait=True)
 

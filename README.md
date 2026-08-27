@@ -35,7 +35,8 @@ tier costs disk, not standing RAM.
 
 ## Status
 
-Phase 0 (scaffold) complete. See the build plan for what lands next.
+Phase 1 complete: the stack comes up cold and bootstraps itself. Phase 2 (mock
+LLM endpoints and workload generation) is next.
 
 ## Requirements
 
@@ -46,9 +47,24 @@ Phase 0 (scaffold) complete. See the build plan for what lands next.
 
 ```bash
 git clone <repo> && cd llm-telemetry-engine
-python tasks.py install     # editable install + dev deps
-python tasks.py up          # start redpanda, clickhouse, otelcol, grafana
+python tasks.py install     # create .venv, install package + dev deps
+python tasks.py up          # start the stack, then reconcile topics and schema
 ```
+
+`up` is a cold-start path: from empty volumes it brings up all four services,
+waits for each to be genuinely ready, creates the `otel.spans` topic at the
+configured partition count and retention, and applies the ClickHouse schema.
+Re-running it is a no-op.
+
+| Service | Host address | Notes |
+| --- | --- | --- |
+| Redpanda | `localhost:19092` | Kafka API; admin/metrics on `:9644` |
+| ClickHouse | `localhost:8123` | HTTP; native protocol on `:9000` |
+| OTel Collector | `localhost:4317` / `:4318` | OTLP gRPC / HTTP; self-telemetry on `:8888` |
+| Grafana | http://localhost:3000 | anonymous admin, no login |
+
+Idle footprint is roughly 540 MiB across the four containers, against a ~4.3 GiB
+ceiling that only matters under load.
 
 Defaults target the local compose stack, so no `.env` is needed for a fresh
 clone. Copy `.env.example` to `.env` only to override something.
@@ -61,26 +77,35 @@ apart. Run `python tasks.py` to list targets.
 
 | Target | Does |
 | --- | --- |
-| `install` | Editable install with dev extras |
+| `install` | Create `.venv`, editable install with dev extras |
 | `lint` / `fmt` | Ruff check / autofix + format |
 | `test` | Unit tests (no stack needed) |
 | `test-integration` | Integration tests (stack required) |
 | `ci` | Everything CI runs |
-| `up` / `down` / `nuke` | Start / stop / stop-and-delete-volumes |
+| `up` / `down` / `nuke` | Start + bootstrap / stop / stop-and-delete-volumes |
+| `up-bare` | Start containers without bootstrapping |
+| `bootstrap` / `migrate` | Reconcile topics + schema / schema only |
 | `logs` / `ps` | Tail logs / container status |
 
 ### CLI
 
 ```bash
-telemetry-engine config     # print effective, env-resolved settings
-telemetry-engine version
+telemetry-engine config         # print effective, env-resolved settings
+telemetry-engine stack wait     # block until every service is truly ready
+telemetry-engine topics apply   # reconcile Redpanda topics from topics.yaml
+telemetry-engine topics list    # show topics as they exist on the broker
+telemetry-engine migrate        # apply pending ClickHouse migrations
+telemetry-engine bootstrap      # stack wait + topics apply + migrate
 ```
+
+Most commands take `--dry-run`.
 
 ## Layout
 
 | Path | Contains |
 | --- | --- |
 | `deploy/` | All infra config: compose file, otelcol, ClickHouse, Grafana provisioning |
+| `deploy/redpanda/topics.yaml` | Declarative topic spec, reconciled by the CLI |
 | `schemas/clickhouse/` | Versioned DDL — the source of truth for hot-tier tables |
 | `src/telemetry_engine/cardinality/` | Dimension registry and the cardinality guard |
 | `src/telemetry_engine/emitters/` | Mock LLM endpoints and workload generation |

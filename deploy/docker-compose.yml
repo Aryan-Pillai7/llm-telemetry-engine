@@ -64,8 +64,15 @@ services:
       - "9000:9000" # native protocol
     volumes:
       - clickhouse-data:/var/lib/clickhouse
-      - ./clickhouse/config.d:/etc/clickhouse-server/config.d:ro
-      - ./clickhouse/users.d:/etc/clickhouse-server/users.d:ro
+      # Mount individual FILES, never the config.d/users.d directories. The
+      # image ships its own docker_related_config.xml in config.d, and that is
+      # what sets listen_host to the wildcard address. Mounting a host
+      # directory over config.d hides it, so ClickHouse binds loopback only and
+      # every connection from the host is accepted by docker-proxy and then
+      # closed with no response -- which looks like a network problem and is
+      # not one.
+      - ./clickhouse/config.d/limits.xml:/etc/clickhouse-server/config.d/limits.xml:ro
+      - ./clickhouse/users.d/profiles.xml:/etc/clickhouse-server/users.d/profiles.xml:ro
     ulimits:
       # ClickHouse opens a lot of files; the default container limit is low
       # enough to cause confusing failures once part counts grow.
@@ -74,7 +81,11 @@ services:
         hard: 262144
     mem_limit: 2g
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- localhost:8123/ping | grep -q Ok"]
+      # 127.0.0.1, not localhost. This container has no IPv6, so ClickHouse
+      # binds 0.0.0.0 only (its [::] bind fails, non-fatally). busybox wget
+      # resolves localhost to ::1 first and gets connection-refused against a
+      # server that is perfectly healthy.
+      test: ["CMD-SHELL", "wget -qO- 127.0.0.1:8123/ping | grep -q Ok"]
       interval: 5s
       timeout: 5s
       retries: 20
@@ -101,12 +112,10 @@ services:
     # Must stay comfortably above memory_limiter's limit_mib + spike_limit_mib,
     # or the container is OOM-killed before the limiter can shed anything.
     mem_limit: 768m
-    healthcheck:
-      test: ["CMD-SHELL", "wget -qO- localhost:13133/ | grep -q StatusOK"]
-      interval: 5s
-      timeout: 5s
-      retries: 20
-      start_period: 10s
+    # No healthcheck: this image is distroless (no /bin/sh, no wget), and a
+    # Docker healthcheck can only run a command *inside* the container. The
+    # collector's health_check extension on :13133 is probed from the host
+    # instead, by `telemetry-engine stack wait`, which `tasks.py up` runs.
 
   # --- Dashboards -----------------------------------------------------------
   grafana:
@@ -131,7 +140,7 @@ services:
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
     mem_limit: 512m
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- localhost:3000/api/health | grep -q ok"]
+      test: ["CMD-SHELL", "wget -qO- 127.0.0.1:3000/api/health | grep -q ok"]
       interval: 10s
       timeout: 5s
       retries: 20
