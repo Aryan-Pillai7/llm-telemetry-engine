@@ -111,7 +111,13 @@ services:
       - ./otelcol/config.yaml:/etc/otelcol/config.yaml:ro
     # Must stay comfortably above memory_limiter's limit_mib + spike_limit_mib,
     # or the container is OOM-killed before the limiter can shed anything.
-    mem_limit: 768m
+    #
+    # Raised from 768m after measurement: at ~6k spans/s the limiter was
+    # refusing at the receiver ("data refused due to high memory usage"), which
+    # is correct shedding behaviour but made the collector, not ClickHouse, the
+    # binding constraint -- and an experiment about ClickHouse backpressure
+    # cannot run with a different component saturating first.
+    mem_limit: 1536m
     # No healthcheck: this image is distroless (no /bin/sh, no wget), and a
     # Docker healthcheck can only run a command *inside* the container. The
     # collector's health_check extension on :13133 is probed from the host

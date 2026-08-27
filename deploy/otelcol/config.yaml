@@ -22,8 +22,8 @@ processors:
   # to trip before the kernel's OOM killer does, or it accomplishes nothing.
   memory_limiter:
     check_interval: 1s
-    limit_mib: 450
-    spike_limit_mib: 128
+    limit_mib: 1024
+    spike_limit_mib: 256
 
   # Batching is the single biggest lever on downstream cost. Large, infrequent
   # batches keep Redpanda produce overhead low and, more importantly, keep
@@ -60,7 +60,11 @@ exporters:
     sending_queue:
       enabled: true
       num_consumers: 4
-      queue_size: 2000
+      # Queue depth is in BATCHES, not spans. At send_batch_size 8192 a queue of
+      # 2000 could hold ~16M spans, which is what pushed the limiter into
+      # refusing at the receiver. 500 bounds the worst case to ~4M while still
+      # absorbing a multi-second Redpanda hiccup.
+      queue_size: 500
       # THE backpressure decision. When the queue is full the exporter drops
       # the batch and increments otelcol_exporter_send_failed_spans instead of
       # blocking the receiver. Blocking would propagate pressure back up the

@@ -469,7 +469,7 @@ def backpressure(
         if not check.passed:
             typer.secho(f"           would hide: {check.would_hide}", fg=typer.colors.YELLOW)
 
-    baseline_lat = result.probe_latency(0, result.baseline_s)
+    baseline_lat = result.probe_latency(*result.baseline_window())
     burst_lat = result.probe_latency(*result.burst_window())
     recovery_time = result.recovery_seconds()
 
@@ -489,6 +489,7 @@ def backpressure(
         )
     )
     typer.echo(f"    collector dropped: {result.collector_dropped:,}")
+    typer.echo(f"    collector refused: {result.collector_refused:,}")
     typer.echo(f"    sdk-side loss:     {result.sdk_lost:,}")
     typer.echo(f"    unaccounted:       {result.unaccounted:,}")
     typer.echo("")

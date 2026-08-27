@@ -38,9 +38,22 @@ than warning about it.
 7.  SDK-side loss is blamed on the pipeline. The BatchSpanProcessor drops when
     its own queue fills; that is the generator failing, not backpressure.
     -> emitted-vs-accepted is accounted as a separate stage.
-8.  The lag reader perturbs the consumer group it measures. -> `no_rebalance`.
+8.  The lag reader perturbs the consumer group it measures.
+    -> `lag_reader_is_noninvasive`, measured across the baseline only, since
+    the deliberate stall causes rebalances of its own.
 
 A run that fails any check reports INVALID and its numbers are not to be quoted.
+That is not decoration: the first full run failed two of them and the numbers it
+produced were indeed wrong. See `docs/backpressure.md`.
+
+ONE CLOCK. Every timestamp in this module comes from `time.perf_counter()`.
+Mixing it with `time.monotonic()` was an actual bug here: the probe thread was
+switched to perf_counter for resolution while the run origin stayed on
+monotonic, so every probe timestamp was the difference between two unrelated
+epochs. Phase windowing then matched nothing, the endpoint check reported zero
+probes, and -- more quietly -- the recovery time was computed against the same
+broken axis. The two clocks have no defined relationship; they must never be
+subtracted from each other.
 """
 
 from __future__ import annotations
@@ -81,6 +94,13 @@ MIN_DELIVERY_EFFICIENCY = 0.95
 MIN_PEAK_LAG_TO_BE_MEANINGFUL = 5_000  # messages
 MAX_UNACCOUNTED_SPAN_FRACTION = 0.02  # of spans emitted
 MIN_ENDPOINT_PROBES_PER_PHASE = 10
+
+# A run must start from a quiesced pipeline. Without this, a previous run's
+# recovery bleeds into the next run's baseline: rebalances from an earlier
+# unpause were still arriving during a later baseline, which made the
+# lag_reader check fire for a condition the lag reader had not caused.
+QUIESCE_STABLE_S = 20.0
+QUIESCE_TIMEOUT_S = 300.0
 
 
 @dataclass
@@ -139,13 +159,24 @@ class BackpressureResult:
     # Span accounting, stage by stage.
     endpoint_spans: int = 0
     collector_accepted: int = 0
+    collector_refused: int = 0
     collector_sent: int = 0
     collector_dropped: int = 0
     clickhouse_rows: int = 0
 
     rebalances_before: int = 0
+    rebalances_after_baseline: int = 0
     rebalances_after: int = 0
     stall_released_at: float | None = None
+
+    # Observed phase boundaries, in run-relative seconds. Recorded rather than
+    # derived from the configured durations: a phase always takes slightly
+    # longer than requested (process spawn, SDK flush), and windowing on the
+    # nominal duration silently misattributes samples near the edges.
+    baseline_started_at: float = 0.0
+    baseline_ended_at: float = 0.0
+    burst_started_at: float = 0.0
+    burst_ended_at: float = 0.0
 
     checks: list[Check] = field(default_factory=list)
 
@@ -166,12 +197,20 @@ class BackpressureResult:
 
     @property
     def sdk_lost(self) -> int:
-        """Spans that never reached the collector: the SDK's own queue dropping.
+        """Spans that never reached the collector AND were not refused by it.
 
-        Generator-side loss. Attributing it to the pipeline would overstate
-        backpressure loss, which is failure mode 7.
+        This is genuinely generator-side loss: the SDK's own export queue
+        overflowing. Refusals are subtracted out because they are a different
+        thing with a different owner -- the collector deliberately shedding at
+        the receiver under memory pressure (ADR-003 tier 2).
+
+        Conflating the two was a real mis-attribution here: a run reported
+        111,212 spans "lost in the SDK" when the collector had in fact refused
+        them and said so in its logs. Same number, wrong owner, and it would
+        have gone into the write-up as a generator weakness rather than as the
+        memory limiter doing its job.
         """
-        return max(0, self.emitted_total - self.collector_accepted)
+        return max(0, self.emitted_total - self.collector_accepted - self.collector_refused)
 
     @property
     def unaccounted(self) -> int:
@@ -179,7 +218,15 @@ class BackpressureResult:
         return max(0, self.collector_sent - self.clickhouse_rows)
 
     def burst_window(self) -> tuple[float, float]:
+        """Observed burst window, falling back to nominal if unrecorded."""
+        if self.burst_ended_at > self.burst_started_at:
+            return (self.burst_started_at, self.burst_ended_at)
         return (self.baseline_s, self.baseline_s + self.burst_s)
+
+    def baseline_window(self) -> tuple[float, float]:
+        if self.baseline_ended_at > self.baseline_started_at:
+            return (self.baseline_started_at, self.baseline_ended_at)
+        return (0.0, self.baseline_s)
 
     def recovery_seconds(self) -> float | None:
         """Time until lag falls below RECOVERED_LAG after pressure is removed.
@@ -217,7 +264,7 @@ class BackpressureResult:
             "recovery_seconds": self.recovery_seconds(),
             "sdk_lost": self.sdk_lost,
             "unaccounted": self.unaccounted,
-            "baseline_latency": self.probe_latency(0, self.baseline_s),
+            "baseline_latency": self.probe_latency(*self.baseline_window()),
             "burst_latency": self.probe_latency(*self.burst_window()),
         }
         return json.dumps(payload, indent=2, default=str)
@@ -272,11 +319,11 @@ class EndpointProbe:
                     self.results.append(
                         ProbeResult(
                             t=started - self._t0,
-                            latency_ms=(time.monotonic() - started) * 1000.0,
+                            latency_ms=(time.perf_counter() - started) * 1000.0,
                             ok=False,
                         )
                     )
-                elapsed = time.monotonic() - started
+                elapsed = time.perf_counter() - started
                 self._stop.wait(max(0.0, self.interval - elapsed))
 
     def stop(self) -> list[ProbeResult]:
@@ -337,6 +384,47 @@ class HealthSampler:
 # --- Validity checks ----------------------------------------------------------
 
 
+def wait_until_quiesced(
+    settings: Settings,
+    *,
+    stable_s: float = QUIESCE_STABLE_S,
+    timeout_s: float = QUIESCE_TIMEOUT_S,
+) -> None:
+    """Block until lag is drained and the consumer group has stopped moving.
+
+    Two conditions, both necessary: lag below the recovered threshold (so the
+    baseline is not measuring an earlier run's backlog), and no rebalance for
+    `stable_s` (so the group has finished reacting to whatever happened last).
+    """
+    deadline = time.perf_counter() + timeout_s
+    stable_since: float | None = None
+    last_rebalances: int | None = None
+
+    while time.perf_counter() < deadline:
+        lag = read_lag(settings.redpanda).total_lag
+        with client(settings.clickhouse) as conn:
+            rebalances = _rebalance_count(conn)
+
+        moved = last_rebalances is not None and rebalances != last_rebalances
+        last_rebalances = rebalances
+
+        if lag > RECOVERED_LAG or moved:
+            stable_since = None
+        elif stable_since is None:
+            stable_since = time.perf_counter()
+        elif time.perf_counter() - stable_since >= stable_s:
+            log.info("pipeline_quiesced", lag=lag, rebalances=rebalances)
+            return
+
+        time.sleep(2.0)
+
+    raise RuntimeError(
+        f"pipeline did not quiesce within {timeout_s}s "
+        f"(lag={read_lag(settings.redpanda).total_lag}); refusing to start a run "
+        "whose baseline would be measuring the previous run"
+    )
+
+
 def _rebalance_count(conn) -> int:
     rows = conn.query("""
         SELECT sum(num_rebalance_assignments)
@@ -366,15 +454,18 @@ def validate(result: BackpressureResult) -> list[Check]:
         )
     )
 
-    delivery_efficiency = (
-        result.collector_accepted / result.emitted_total if result.emitted_total else 0.0
-    )
+    # Refused spans reached the collector and were shed there deliberately, so
+    # they count as delivered for the purpose of "did the load arrive?". What
+    # this check is really asking is whether the GENERATOR got the load out.
+    delivered = result.collector_accepted + result.collector_refused
+    delivery_efficiency = delivered / result.emitted_total if result.emitted_total else 0.0
     checks.append(
         Check(
             name="load_actually_delivered",
             passed=delivery_efficiency >= MIN_DELIVERY_EFFICIENCY,
             detail=f"{delivery_efficiency:.1%} of created spans reached the collector "
-            f"({result.collector_accepted:,} of {result.emitted_total:,})",
+            f"({delivered:,} of {result.emitted_total:,}; "
+            f"{result.collector_refused:,} refused there under memory pressure)",
             would_hide="generator_hit_target counts spans CREATED. A run passed it at "
             "94.8% while the SDK queue discarded most of them, so the pipeline "
             "was loaded at a fraction of the claimed rate and the experiment was "
@@ -429,6 +520,7 @@ def validate(result: BackpressureResult) -> list[Check]:
             passed=unaccounted_fraction <= MAX_UNACCOUNTED_SPAN_FRACTION,
             detail=f"{result.unaccounted:,} of {result.emitted_total:,} spans unaccounted "
             f"({unaccounted_fraction:.2%}); sdk_lost={result.sdk_lost:,}, "
+            f"collector_refused={result.collector_refused:,}, "
             f"collector_dropped={result.collector_dropped:,}",
             would_hide="Loss upstream of Redpanda leaves nothing to lag on, so lag reads "
             "zero while data is being discarded -- the pipeline looks healthy "
@@ -436,7 +528,7 @@ def validate(result: BackpressureResult) -> list[Check]:
         )
     )
 
-    baseline_probes = result.probe_latency(0, result.baseline_s)["n"]
+    baseline_probes = result.probe_latency(*result.baseline_window())["n"]
     burst_probes = result.probe_latency(*result.burst_window())["n"]
     checks.append(
         Check(
@@ -450,11 +542,20 @@ def validate(result: BackpressureResult) -> list[Check]:
         )
     )
 
+    # Measured across the BASELINE only. Pausing ClickHouse stops its consumers
+    # heartbeating, so the group rebalances by design; counting those against
+    # the lag reader made an earlier run fail this check for the wrong reason --
+    # a check that fires on the wrong cause is only marginally better than one
+    # that never fires. The baseline window has the lag reader running with no
+    # stall applied, which is the condition that actually isolates its effect.
+    stall_rebalances = result.rebalances_after - result.rebalances_after_baseline
     checks.append(
         Check(
-            name="no_rebalance",
-            passed=result.rebalances_after == result.rebalances_before,
-            detail=f"consumer rebalances {result.rebalances_before} -> {result.rebalances_after}",
+            name="lag_reader_is_noninvasive",
+            passed=result.rebalances_after_baseline == result.rebalances_before,
+            detail=f"rebalances during baseline: {result.rebalances_before} -> "
+            f"{result.rebalances_after_baseline} "
+            f"({stall_rebalances} more followed the deliberate stall, as expected)",
             would_hide="The lag reader joins the same consumer group. If it triggered a "
             "rebalance it would be measuring lag it caused itself.",
         )
@@ -527,9 +628,9 @@ def run_experiment(
 
     try:
         # Wait for the endpoint to accept requests before starting the clock.
-        deadline = time.monotonic() + 60.0
+        deadline = time.perf_counter() + 60.0
         ready = False
-        while time.monotonic() < deadline:
+        while time.perf_counter() < deadline:
             try:
                 if (
                     httpx.get(f"http://127.0.0.1:{endpoint_port}/health", timeout=2.0).status_code
@@ -542,6 +643,10 @@ def run_experiment(
         if not ready:
             raise RuntimeError("mock endpoint did not become ready")
 
+        # Refuse to start on an unsettled pipeline. See wait_until_quiesced.
+        log.info("waiting_for_quiesce")
+        wait_until_quiesced(settings)
+
         with client(settings.clickhouse) as conn:
             result.rebalances_before = _rebalance_count(conn)
             rows_before = int(
@@ -550,13 +655,15 @@ def run_experiment(
 
         before: CollectorSnapshot = read_collector()
 
-        t0 = time.monotonic()
+        # perf_counter throughout: see the module docstring on ONE CLOCK.
+        t0 = time.perf_counter()
         sampler = HealthSampler(settings, interval_s=sample_interval_s)
         probe = EndpointProbe(endpoint_url, rate_per_sec=10.0)
         sampler.start(t0)
         probe.start(t0)
 
         log.info("phase_baseline", rate=sustained_rate, seconds=baseline_s)
+        result.baseline_started_at = time.perf_counter() - t0
         baseline = run_load(
             duration_s=baseline_s,
             profile=LoadProfile(
@@ -571,6 +678,13 @@ def run_experiment(
             workers=workers,
         )
 
+        result.baseline_ended_at = time.perf_counter() - t0
+
+        # Rebalances observed across the baseline, before any stall. This is the
+        # window that isolates whether the lag reader perturbs the group.
+        with client(settings.clickhouse) as conn:
+            result.rebalances_after_baseline = _rebalance_count(conn)
+
         if stall_consumer:
             # Freeze, do not kill: connections stay open and the consumer group
             # keeps its assignment, so this is a stall rather than a rebalance.
@@ -578,6 +692,7 @@ def run_experiment(
             subprocess.run(["docker", "pause", "te-clickhouse"], check=True, capture_output=True)
 
         log.info("phase_burst", rate=burst_rate, seconds=burst_s, stalled=stall_consumer)
+        result.burst_started_at = time.perf_counter() - t0
         burst = run_load(
             duration_s=burst_s,
             profile=LoadProfile(
@@ -592,10 +707,12 @@ def run_experiment(
             workers=workers,
         )
 
+        result.burst_ended_at = time.perf_counter() - t0
+
         if stall_consumer:
             log.info("resuming_clickhouse")
             subprocess.run(["docker", "unpause", "te-clickhouse"], check=True, capture_output=True)
-            result.stall_released_at = time.monotonic() - t0
+            result.stall_released_at = time.perf_counter() - t0
 
         log.info("phase_recovery", seconds=recovery_s)
         time.sleep(recovery_s)
@@ -615,6 +732,7 @@ def run_experiment(
         time.sleep(settle_s)
 
         after = read_collector()
+        result.collector_refused = after.refused_spans - before.refused_spans
         result.collector_accepted = after.accepted_spans - before.accepted_spans
         result.collector_sent = after.sent_spans - before.sent_spans
         result.collector_dropped = after.dropped_spans - before.dropped_spans
