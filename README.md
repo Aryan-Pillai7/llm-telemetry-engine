@@ -35,24 +35,40 @@ tier costs disk, not standing RAM.
 
 ## Status
 
-Phase 3 complete — the hot path moves data end to end. On a cold stack,
-106,737 emitted spans produced exactly 106,737 rows in ClickHouse, with zero
-dead-lettered messages and consumer lag back to 0.
+Phases 0–6 complete. The hot path ingests, aggregates under an enforced
+cardinality bound, and is dashboarded; the backpressure claim has been measured
+rather than asserted. Phase 7 (cold tier) is in progress.
 
-Phase 6 complete — the backpressure claim is measured, not asserted. Under a
-68-second ClickHouse stall at ~6.2k spans/s, consumer lag grew to 135,447
-messages and drained in 34.2s, while endpoint p99 moved 28.4 ms → 32.6 ms. The
-pipeline shed 2.7% of telemetry on purpose and knows exactly how much. Full
-method, numbers, and the four invalid runs that preceded the valid one:
+### Throughput: the honest number
+
+**Sustained delivered throughput is ~12.4k spans/s at 100% delivery.**
+
+Phase 2 of this project reported 19.7k spans/s. That figure was true about spans
+*created* by the load generator and was never verified as spans *delivered* to
+the pipeline — at that rate the SDK's own export queue was discarding a large
+share before the collector ever saw them. Calibration
+([`scripts/calibrate_generator.py`](scripts/calibrate_generator.py)) established
+the delivered figure, and ADR-020 records the correction.
+
+**Quote 12.4k/s.** The larger number measures the generator, not this pipeline.
+It is left in the build log rather than deleted, because how it was wrong is
+more useful than the number was.
+
+### Measured
+
+| | |
+| --- | --- |
+| Sustained delivered throughput | ~12.4k spans/s at 100% delivery |
+| Ingest latency (span end → queryable) | p50 3.2 s, p95 8.5 s |
+| Peak lag under a 68 s ClickHouse stall | 135,447 messages |
+| Recovery once the consumer resumed | 34.2 s |
+| Endpoint p99 during that stall | 28.4 ms → 32.6 ms (+15%) |
+| Rollup fidelity | totals match raw exactly; tDigest p95 within 0.44% |
+| Rollup reduction | 349k raw rows (43 MiB) → 19k rollup rows (3.8 MiB) |
+| Tenant-scoped query on 1.7M rows | 81 ms |
+
+Full backpressure method and the four INVALID runs that preceded the valid one:
 [docs/backpressure.md](docs/backpressure.md).
-
-Phase 4 delivered 1m/1h rollups with an enforced cardinality bound. Rollup
-totals match raw exactly; tDigest p95 is within 0.44% of exact; 349k raw rows
-(43 MiB) reduce to 19k rollup rows (3.8 MiB).
-
-Measured over 1.5M rows: pipeline latency (span end → queryable) p50 3.2s /
-p95 8.5s, 2.6x compression, tenant-scoped queries in 81 ms. Phase 5 (Grafana
-dashboards) is next.
 
 ## Requirements
 
