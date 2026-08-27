@@ -15,8 +15,13 @@ found by accident. The eight failure modes below are the pre-registered answers
 for this experiment, each implemented as a check that INVALIDATES the run rather
 than warning about it.
 
-1.  The generator never reaches its target. Lag stays flat and the pipeline
-    looks like it kept up, when nothing ever stressed it. -> `generator_hit_target`
+1.  The generator never reaches its target -- or reaches it only on paper. Lag
+    stays flat and the pipeline looks like it kept up, when nothing ever
+    stressed it. Checked at two layers, because the first version checked the
+    wrong one: `generator_hit_target` counts spans CREATED, and a run passed it
+    at 94.8% while the SDK discarded most of them before the collector saw
+    anything. `load_actually_delivered` counts spans the collector ACCEPTED,
+    which is the load the pipeline actually experienced.
 2.  The collector restarts mid-run. Its counters are cumulative, so a restart
     resets them to zero and the drop count reads as zero. -> `no_counter_reset`
 3.  Spans are lost upstream of Redpanda. There is then nothing to lag on, so lag
@@ -68,6 +73,11 @@ RECOVERED_LAG = 500
 # Pre-registered thresholds. Fixed before the first run so the experiment cannot
 # be graded against whatever it happened to produce.
 MIN_GENERATOR_ACHIEVEMENT = 0.90  # of its own target
+# Fraction of created spans that must actually reach the collector. Calibrated:
+# the generator delivers ~100% up to about 12.4k spans/s on this hardware and
+# starts shedding in its own SDK queue above that. See
+# scripts/calibrate_generator.py.
+MIN_DELIVERY_EFFICIENCY = 0.95
 MIN_PEAK_LAG_TO_BE_MEANINGFUL = 5_000  # messages
 MAX_UNACCOUNTED_SPAN_FRACTION = 0.02  # of spans emitted
 MIN_ENDPOINT_PROBES_PER_PHASE = 10
@@ -135,6 +145,7 @@ class BackpressureResult:
 
     rebalances_before: int = 0
     rebalances_after: int = 0
+    stall_released_at: float | None = None
 
     checks: list[Check] = field(default_factory=list)
 
@@ -171,16 +182,18 @@ class BackpressureResult:
         return (self.baseline_s, self.baseline_s + self.burst_s)
 
     def recovery_seconds(self) -> float | None:
-        """Time from the END of the burst until lag falls below RECOVERED_LAG.
+        """Time until lag falls below RECOVERED_LAG after pressure is removed.
 
-        Measured strictly after the burst window closes (failure mode 6): lag
-        falling while load is still running says nothing about recovery.
-        Returns None if it never recovered within the observation window.
+        Measured strictly after the burst window closes, and after the stall is
+        released when one was applied (failure mode 6): lag falling while load
+        is still running, or while the consumer is still frozen, says nothing
+        about recovery. Returns None if it never recovered in the window.
         """
         _, burst_end = self.burst_window()
+        origin = max(burst_end, self.stall_released_at or 0.0)
         for sample in self.samples:
-            if sample.t >= burst_end and sample.total_lag <= RECOVERED_LAG:
-                return sample.t - burst_end
+            if sample.t >= origin and sample.total_lag <= RECOVERED_LAG:
+                return sample.t - origin
         return None
 
     def probe_latency(self, start: float, end: float) -> dict[str, float]:
@@ -238,10 +251,14 @@ class EndpointProbe:
     def _run(self) -> None:
         with httpx.Client(timeout=10.0) as client_:
             while not self._stop.is_set():
-                started = time.monotonic()
+                # perf_counter, not monotonic: on Windows monotonic has ~15.6ms
+                # granularity, which quantised the first run's endpoint latencies
+                # to 0/15/16/31ms and made "p50 = 0.0ms" a timer artefact rather
+                # than a measurement.
+                started = time.perf_counter()
                 try:
                     response = client_.post(self.url, json={"max_tokens": 256})
-                    latency_ms = (time.monotonic() - started) * 1000.0
+                    latency_ms = (time.perf_counter() - started) * 1000.0
                     body = response.json() if response.status_code == 200 else {}
                     self.results.append(
                         ProbeResult(
@@ -290,7 +307,7 @@ class HealthSampler:
 
     def _run(self) -> None:
         while not self._stop.is_set():
-            started = time.monotonic()
+            started = time.perf_counter()
             try:
                 lag = read_lag(self.settings.redpanda)
                 collector = read_collector()
@@ -307,7 +324,7 @@ class HealthSampler:
                 )
             except Exception as exc:
                 log.warning("sample_failed", error=str(exc))
-            elapsed = time.monotonic() - started
+            elapsed = time.perf_counter() - started
             self._stop.wait(max(0.0, self.interval - elapsed))
 
     def stop(self) -> list[Sample]:
@@ -346,6 +363,22 @@ def validate(result: BackpressureResult) -> list[Check]:
             f"({result.generator_spans:,} of {result.generator_target_spans:,})",
             would_hide="A generator that fell short would leave lag flat, and the "
             "pipeline would look like it absorbed a burst it never received.",
+        )
+    )
+
+    delivery_efficiency = (
+        result.collector_accepted / result.emitted_total if result.emitted_total else 0.0
+    )
+    checks.append(
+        Check(
+            name="load_actually_delivered",
+            passed=delivery_efficiency >= MIN_DELIVERY_EFFICIENCY,
+            detail=f"{delivery_efficiency:.1%} of created spans reached the collector "
+            f"({result.collector_accepted:,} of {result.emitted_total:,})",
+            would_hide="generator_hit_target counts spans CREATED. A run passed it at "
+            "94.8% while the SDK queue discarded most of them, so the pipeline "
+            "was loaded at a fraction of the claimed rate and the experiment was "
+            "measuring the generator, not the pipeline.",
         )
     )
 
@@ -440,17 +473,32 @@ def run_experiment(
     burst_s: float = 45.0,
     recovery_s: float = 120.0,
     sustained_rate: int = 5_000,
-    burst_rate: int = 20_000,
-    workers: int = 8,
+    burst_rate: int = 12_000,
+    workers: int = 6,
     sample_interval_s: float = 1.0,
     endpoint_port: int = 8099,
     seed: int = 20260828,
+    stall_consumer: bool = True,
+    settle_s: float = 25.0,
 ) -> BackpressureResult:
-    """Baseline -> burst -> recovery, with everything instrumented.
+    """Baseline -> load with the consumer stalled -> recovery.
+
+    WHY THE CONSUMER IS STALLED. The original design assumed load alone could
+    outrun ClickHouse. Calibration showed otherwise: this machine's generator
+    delivers at most ~12.4k spans/s, and ClickHouse consumed every one of them
+    with lag back at 0 after each run. Pushing harder does not create
+    backpressure, it makes the *generator* the bottleneck and produces a number
+    about the wrong component.
+
+    So overload is induced the way ADR-003 actually describes it -- by stalling
+    the consumer. `docker pause` freezes ClickHouse without dropping
+    connections or triggering a rebalance, which is precisely the "ClickHouse
+    cannot keep up" condition the design claims to survive: Redpanda absorbs,
+    lag grows, the endpoint is untouched, and consumption resumes on unpause.
 
     The endpoint runs as a real subprocess and is probed over HTTP throughout,
-    because the claim being tested is specifically about what an observed
-    service experiences.
+    because the claim under test is specifically about what an observed service
+    experiences.
     """
     result = BackpressureResult(
         started_at=datetime.now().isoformat(timespec="seconds"),
@@ -523,7 +571,13 @@ def run_experiment(
             workers=workers,
         )
 
-        log.info("phase_burst", rate=burst_rate, seconds=burst_s)
+        if stall_consumer:
+            # Freeze, do not kill: connections stay open and the consumer group
+            # keeps its assignment, so this is a stall rather than a rebalance.
+            log.info("stalling_clickhouse")
+            subprocess.run(["docker", "pause", "te-clickhouse"], check=True, capture_output=True)
+
+        log.info("phase_burst", rate=burst_rate, seconds=burst_s, stalled=stall_consumer)
         burst = run_load(
             duration_s=burst_s,
             profile=LoadProfile(
@@ -538,6 +592,11 @@ def run_experiment(
             workers=workers,
         )
 
+        if stall_consumer:
+            log.info("resuming_clickhouse")
+            subprocess.run(["docker", "unpause", "te-clickhouse"], check=True, capture_output=True)
+            result.stall_released_at = time.monotonic() - t0
+
         log.info("phase_recovery", seconds=recovery_s)
         time.sleep(recovery_s)
 
@@ -548,6 +607,12 @@ def run_experiment(
         result.generator_target_spans = baseline.target_spans + burst.target_spans
         result.generator_achieved_rate = burst.achieved_rate
         result.endpoint_spans = sum(p.spans_emitted for p in result.probes)
+
+        # The SDK flushes on shutdown and ClickHouse drains afterwards. Reading
+        # the counters before that settles undercounts delivery -- the mistake
+        # that made an early calibration report 1.8k spans/s delivered against a
+        # true 12.4k.
+        time.sleep(settle_s)
 
         after = read_collector()
         result.collector_accepted = after.accepted_spans - before.accepted_spans
@@ -562,6 +627,9 @@ def run_experiment(
             result.rebalances_after = _rebalance_count(conn)
 
     finally:
+        if stall_consumer:
+            # Never leave the stack frozen because a run failed midway.
+            subprocess.run(["docker", "unpause", "te-clickhouse"], check=False, capture_output=True)
         endpoint.terminate()
         try:
             endpoint.wait(timeout=30)
