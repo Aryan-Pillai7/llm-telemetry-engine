@@ -438,6 +438,11 @@ def cold_export(
         help="Force re-export from this timestamp (YYYY-MM-DD HH:MM:SS). "
         "Needed when the lake was deleted or restored while the watermark stayed put.",
     ),
+    lag_margin_seconds: int = typer.Option(
+        300,
+        help="Stop this far behind now. The default protects late-arriving spans; "
+        "lower it only when you accept losing them (tests, demos).",
+    ),
 ) -> None:
     """Export raw spans from ClickHouse into hive-partitioned Parquet.
 
@@ -453,11 +458,18 @@ def cold_export(
     configure_logging(settings.log_level)
 
     from datetime import datetime as _dt
+    from datetime import timedelta
 
     rewind_to = _dt.strptime(since, "%Y-%m-%d %H:%M:%S") if since else None
 
     with client(settings.clickhouse) as conn:
-        result = run_export(conn, settings, max_windows=max_windows, since=rewind_to)
+        result = run_export(
+            conn,
+            settings,
+            max_windows=max_windows,
+            since=rewind_to,
+            lag_margin=timedelta(seconds=lag_margin_seconds),
+        )
 
     for window in result.windows:
         if window.skipped:

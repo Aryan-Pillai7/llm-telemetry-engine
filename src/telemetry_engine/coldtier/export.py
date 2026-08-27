@@ -493,8 +493,20 @@ def run_export(
     now: datetime | None = None,
     max_windows: int | None = None,
     since: datetime | None = None,
+    lag_margin: timedelta = DEFAULT_LAG_MARGIN,
 ) -> ExportResult:
-    """Export every complete window since the watermark."""
+    """Export every complete window since the watermark.
+
+    `lag_margin` is how far behind `now` the exporter stops. It defaults to five
+    minutes because spans arrive seconds late (p95 ingest latency ~8.5s) and a
+    window closed before its stragglers land loses them permanently -- the
+    watermark advances past them either way.
+
+    It is configurable only because a test that generates data and immediately
+    exports it would otherwise export nothing, which reads as a passing run that
+    did no work. Lowering it in production trades data loss for freshness and
+    should be a deliberate decision, not a default.
+    """
     root = settings.coldtier.root
     result = ExportResult()
 
@@ -508,7 +520,7 @@ def run_export(
         return result
 
     reference = now or conn.query("SELECT now()").result_rows[0][0]
-    windows = plan_windows(start, reference)
+    windows = plan_windows(start, reference, lag_margin=lag_margin)
     if max_windows:
         windows = windows[:max_windows]
 

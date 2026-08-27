@@ -159,12 +159,22 @@ jobs:
         # test the timing, not the pipeline.
         run: python -c "import time; time.sleep(20)"
 
+      - name: Export the cold tier
+        # Before the integration tests, not after: the cold-tier tests assert
+        # against a populated lake and fail loudly when there is not one. They
+        # deliberately do not skip -- a test that skips when the exporter
+        # produced nothing is indistinguishable from a test that passed, which
+        # is the failure mode this project keeps designing against.
+        # --lag-margin-seconds 10 rather than the 5-minute default: everything
+        # this job generated is seconds old, so the safe default would export
+        # nothing and the cold-tier tests would have no lake to assert against.
+        run: python -m telemetry_engine.cli cold export --lag-margin-seconds 10
+
       - name: Integration tests
         run: python tasks.py test-integration
 
-      - name: Export and verify the cold tier
+      - name: Verify the cold tier
         run: |
-          python -m telemetry_engine.cli cold export
           python -m telemetry_engine.cli cold verify
           python -m telemetry_engine.cli cold status
 

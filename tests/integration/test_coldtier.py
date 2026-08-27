@@ -72,13 +72,15 @@ def test_timestamps_carry_no_client_timezone(settings: Settings) -> None:
 
 def test_lake_matches_clickhouse_over_the_same_window(settings: Settings) -> None:
     """The cold tier is only useful if it is faithful."""
+    # Compare over whatever the lake actually covers, not a fixed hour. The
+    # earlier version skipped when the lake held less than an hour, and a
+    # skipped test is indistinguishable from a passing one in a summary line --
+    # the exact failure mode the rest of this suite is built to avoid.
     with open_lake(settings.coldtier.root) as conn:
         bounds = conn.execute("SELECT min(ts), max(ts) FROM spans").fetchone()
-        # An hour safely inside the exported range.
-        start = bounds[0].replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
-        end = start + timedelta(hours=1)
-        if end > bounds[1]:
-            pytest.skip("lake covers less than an hour")
+        assert bounds and bounds[0], "lake is empty; run `telemetry-engine cold export`"
+        start = bounds[0].replace(microsecond=0)
+        end = bounds[1].replace(microsecond=0) + timedelta(seconds=1)
         lake_rows, lake_tokens = conn.execute(
             "SELECT count(*), sum(output_tokens) FROM spans WHERE ts >= ? AND ts < ?",
             [start, end],
@@ -97,13 +99,19 @@ def test_lake_matches_clickhouse_over_the_same_window(settings: Settings) -> Non
     assert int(lake_tokens) == int(ch_tokens)
 
 
-def test_reexporting_a_window_does_not_duplicate(settings: Settings) -> None:
+def test_reexporting_a_window_does_not_duplicate(settings: Settings, tmp_path) -> None:
     """Deterministic filenames make a retry idempotent.
 
     Exports the same window twice and asserts the lake gains one file, not two,
     and the same row count both times.
+
+    Writes to a temporary root, never the real lake. An earlier version exported
+    into the production lake using a window of its own choosing, which
+    overlapped the window the exporter had already written and left duplicate
+    rows behind -- so this test broke the fidelity test running after it. A test
+    that corrupts the artifact other tests assert against is worse than no test.
     """
-    root = settings.coldtier.root
+    root = tmp_path
     with client(settings.clickhouse) as conn:
         bounds = conn.query("SELECT min(ts), max(ts) FROM telemetry.spans_raw").result_rows[0]
         if not bounds[0]:
