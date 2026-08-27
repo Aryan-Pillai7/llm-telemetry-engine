@@ -24,7 +24,9 @@ def test_config_values_are_coerced_to_strings(tmp_path) -> None:
     """
     path = tmp_path / "topics.yaml"
     path.write_text(
-        yaml.safe_dump({"topics": [{"name": "t", "partitions": 3, "config": {"retention.ms": 60}}]}),
+        yaml.safe_dump(
+            {"topics": [{"name": "t", "partitions": 3, "config": {"retention.ms": 60}}]}
+        ),
         encoding="utf-8",
     )
     spec = load_specs(path)[0]

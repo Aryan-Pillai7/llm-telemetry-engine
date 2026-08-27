@@ -158,6 +158,103 @@ def stack_wait(
 
 
 @app.command()
+def serve(
+    host: str = typer.Option("127.0.0.1", help="Bind address for the mock endpoint."),
+    port: int = typer.Option(8080, help="Port for the mock endpoint."),
+    otlp: str = typer.Option("http://localhost:4317", help="Collector OTLP gRPC endpoint."),
+) -> None:
+    """Run the mock LLM/agent inference endpoint.
+
+    A real instrumented service for demos and manual pokes. For volume, use
+    `load` -- HTTP overhead caps this well below the 5k spans/s target.
+    """
+    import uvicorn
+
+    from telemetry_engine.emitters.endpoint import create_app
+    from telemetry_engine.emitters.otlp import ExporterConfig
+
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    app_instance = create_app(
+        exporter=ExporterConfig(endpoint=otlp),
+        tenants=settings.workload.tenants,
+        zipf_alpha=settings.workload.zipf_alpha,
+    )
+    uvicorn.run(app_instance, host=host, port=port, log_level=settings.log_level.lower())
+
+
+@app.command()
+def load(
+    duration: float = typer.Option(30.0, help="Seconds to generate load for."),
+    profile: str = typer.Option("steady", help="Load shape: steady | burst | ramp."),
+    rate: int | None = typer.Option(None, help="Override sustained spans/s."),
+    burst_rate: int | None = typer.Option(None, help="Override burst spans/s."),
+    workers: int | None = typer.Option(None, help="Worker processes (default: auto)."),
+    otlp: str = typer.Option("http://localhost:4317", help="Collector OTLP gRPC endpoint."),
+    seed: int = typer.Option(1234, help="Workload seed, for reproducible runs."),
+) -> None:
+    """Drive synthetic telemetry at a target span rate.
+
+    Reports achieved rate against target. A generator that silently misses its
+    target turns a backpressure measurement into fiction, so any shortfall is
+    printed rather than hidden.
+    """
+    from telemetry_engine.emitters.load import run_load
+    from telemetry_engine.emitters.otlp import ExporterConfig
+    from telemetry_engine.emitters.workload import LoadProfile, Profile
+
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    try:
+        shape = Profile(profile.lower())
+    except ValueError:
+        raise typer.BadParameter(
+            f"unknown profile {profile!r}; expected one of: " + ", ".join(p.value for p in Profile)
+        ) from None
+
+    load_profile = LoadProfile(
+        profile=shape,
+        sustained_spans_per_sec=rate or settings.workload.sustained_spans_per_sec,
+        burst_spans_per_sec=burst_rate or settings.workload.burst_spans_per_sec,
+    )
+
+    typer.echo(
+        f"  profile={shape.value} duration={duration}s "
+        f"sustained={load_profile.sustained_spans_per_sec}/s "
+        f"burst={load_profile.burst_spans_per_sec}/s"
+    )
+
+    result = run_load(
+        duration_s=duration,
+        profile=load_profile,
+        exporter=ExporterConfig(endpoint=otlp),
+        tenants=settings.workload.tenants,
+        zipf_alpha=settings.workload.zipf_alpha,
+        seed=seed,
+        workers=workers,
+    )
+
+    typer.echo(f"  workers:       {result.workers}")
+    typer.echo(f"  traces:        {result.traces:,}")
+    typer.echo(f"  spans:         {result.spans:,}")
+    typer.echo(f"  generating:    {result.elapsed_s:.1f}s")
+    typer.echo(f"  final flush:   {result.flush_s:.1f}s")
+    typer.echo(f"  achieved rate: {result.achieved_rate:,.0f} spans/s")
+    typer.echo(f"  target rate:   {result.target_rate:,.0f} spans/s")
+
+    if result.shortfall_pct > 5.0:
+        # The generator, not the pipeline, fell behind. Saying so keeps a
+        # measurement honest instead of attributing the gap to ClickHouse.
+        typer.secho(
+            f"  generator fell {result.shortfall_pct:.1f}% short of its own target "
+            f"-- add --workers or lower --rate before drawing conclusions",
+            fg=typer.colors.YELLOW,
+        )
+
+
+@app.command()
 def bootstrap() -> None:
     """Bring a freshly started stack to a usable state: topics, then schema."""
     stack_wait(timeout=90.0)

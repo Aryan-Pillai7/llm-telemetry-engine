@@ -35,8 +35,10 @@ tier costs disk, not standing RAM.
 
 ## Status
 
-Phase 1 complete: the stack comes up cold and bootstraps itself. Phase 2 (mock
-LLM endpoints and workload generation) is next.
+Phase 2 complete: the stack comes up cold, and synthetic LLM/agent telemetry
+flows into Redpanda at the design rate (measured: 19.7k spans/s against a 20k
+target, 8 workers). Phase 3 (ClickHouse consumption via the Kafka table engine)
+is next.
 
 ## Requirements
 
@@ -85,6 +87,8 @@ apart. Run `python tasks.py` to list targets.
 | `up` / `down` / `nuke` | Start + bootstrap / stop / stop-and-delete-volumes |
 | `up-bare` | Start containers without bootstrapping |
 | `bootstrap` / `migrate` | Reconcile topics + schema / schema only |
+| `serve` | Run the mock inference endpoint on :8080 |
+| `load` / `load-burst` | Drive steady / bursty synthetic telemetry |
 | `logs` / `ps` | Tail logs / container status |
 
 ### CLI
@@ -96,7 +100,30 @@ telemetry-engine topics apply   # reconcile Redpanda topics from topics.yaml
 telemetry-engine topics list    # show topics as they exist on the broker
 telemetry-engine migrate        # apply pending ClickHouse migrations
 telemetry-engine bootstrap      # stack wait + topics apply + migrate
+telemetry-engine serve          # mock inference endpoint (demo / manual pokes)
+telemetry-engine load           # synthetic load at a target span rate
 ```
+
+### Generating telemetry
+
+Two emitters, both producing identical span shapes from the same generator:
+
+```bash
+telemetry-engine serve                                  # instrumented HTTP endpoint
+telemetry-engine load --duration 30 --rate 5000         # 5k spans/s sustained
+telemetry-engine load --profile burst --duration 60     # spikes above capacity
+telemetry-engine load --profile ramp --duration 120     # find the knee
+```
+
+`serve` is a real instrumented service — point a client at it and watch traces
+appear. It cannot reach the 5k spans/s target, because HTTP overhead in Python
+dominates; `load` synthesizes the same spans directly and is what the
+backpressure experiment runs against.
+
+`load` always reports achieved rate against target, and warns when the
+*generator* falls short. A load generator that quietly misses its target turns
+a backpressure measurement into fiction — the gap has to be attributable to the
+generator or the pipeline, never ambiguous.
 
 Most commands take `--dry-run`.
 
@@ -108,7 +135,7 @@ Most commands take `--dry-run`.
 | `deploy/redpanda/topics.yaml` | Declarative topic spec, reconciled by the CLI |
 | `schemas/clickhouse/` | Versioned DDL — the source of truth for hot-tier tables |
 | `src/telemetry_engine/cardinality/` | Dimension registry and the cardinality guard |
-| `src/telemetry_engine/emitters/` | Mock LLM endpoints and workload generation |
+| `src/telemetry_engine/emitters/` | Mock LLM endpoints, workload generation, OTLP export |
 | `src/telemetry_engine/ingest/` | Topic reconciliation, consumer-lag SLI |
 | `src/telemetry_engine/storage/` | ClickHouse client and migration runner |
 | `src/telemetry_engine/coldtier/` | Parquet export, compaction, DuckDB query layer |

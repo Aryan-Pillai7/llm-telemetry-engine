@@ -39,7 +39,9 @@ def test_discovery_on_missing_directory_is_an_error(tmp_path) -> None:
 
 
 def test_statements_split_on_semicolons(tmp_path) -> None:
-    m = _write(tmp_path, "001.sql", "CREATE DATABASE a;\n\nCREATE TABLE a.b (x Int8) ENGINE=Null;\n")
+    m = _write(
+        tmp_path, "001.sql", "CREATE DATABASE a;\n\nCREATE TABLE a.b (x Int8) ENGINE=Null;\n"
+    )
     assert m.statements() == [
         "CREATE DATABASE a",
         "CREATE TABLE a.b (x Int8) ENGINE=Null",

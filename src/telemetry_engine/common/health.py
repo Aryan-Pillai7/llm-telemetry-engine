@@ -38,7 +38,7 @@ def wait_for_http(
 
     while time.monotonic() < deadline:
         try:
-            with urllib.request.urlopen(url, timeout=5) as resp:  # noqa: S310 - fixed local URL
+            with urllib.request.urlopen(url, timeout=5) as resp:
                 body = resp.read().decode("utf-8", errors="replace")
                 if 200 <= resp.status < 300 and (predicate is None or predicate(body)):
                     return

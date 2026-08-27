@@ -159,6 +159,27 @@ def migrate() -> int:
     return py("-m", "telemetry_engine.cli", "migrate")
 
 
+@target("Run the mock LLM inference endpoint on :8080")
+def serve() -> int:
+    if (rc := require_venv()) != 0:
+        return rc
+    return py("-m", "telemetry_engine.cli", "serve")
+
+
+@target("Drive 30s of steady synthetic load at the configured rate")
+def load() -> int:
+    if (rc := require_venv()) != 0:
+        return rc
+    return py("-m", "telemetry_engine.cli", "load")
+
+
+@target("Drive 60s of bursty load (sustained baseline with spikes above capacity)")
+def load_burst() -> int:
+    if (rc := require_venv()) != 0:
+        return rc
+    return py("-m", "telemetry_engine.cli", "load", "--profile", "burst", "--duration", "60")
+
+
 # --- Stack targets -----------------------------------------------------------
 
 
