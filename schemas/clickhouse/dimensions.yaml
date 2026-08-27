@@ -1,0 +1,110 @@
+# Dimension registry — the cardinality contract.
+#
+# This file is the single authority on what may become a GROUP BY key in a
+# rollup. It is enforced, not advisory: `telemetry-engine dimensions apply`
+# syncs it into the ClickHouse allowlist that the rollup materialized views
+# consult, and any value not on that allowlist collapses into `__other__`.
+#
+# Why this exists (ADR-005, ADR-006): a rollup table's row count is the product
+# of its dimensions' cardinalities. One unbounded dimension — a tenant id from
+# an open signup, a model name someone types freely, an error string — turns a
+# compact aggregate into something larger than the raw data it summarises. The
+# budgets below make that arithmetic explicit and checkable:
+#
+#   max rollup rows per minute  =  product(budget + 1 for each dimension)
+#
+# The `+ 1` is the `__other__` bucket. Anything not on the allowlist lands
+# there, so the bound holds no matter what the emitters send.
+#
+# To add a dimension: add it here, add the column to the rollup tables, and
+# extend the materialized views. The unit tests will tell you if you miss a
+# step — schema/registry parity is asserted, not assumed.
+
+version: 1
+
+# Literal value used for anything outside the allowlist. Deliberately ugly so
+# it is obvious in a dashboard that traffic is being bucketed rather than
+# attributed.
+other_bucket: __other__
+
+dimensions:
+  - name: tenant_id
+    column: tenant_id
+    attribute: tenant.id
+    # Not enumerable ahead of time — tenants come and go. The allowlist is
+    # populated dynamically from the top-K tenants by recent volume, which is
+    # how this is handled in practice: named tenants get attributed, the long
+    # tail is aggregated. With zipfian traffic the top 200 cover essentially
+    # all of it.
+    source: top_k
+    budget: 200
+    # Window used when recomputing the top-K allowlist.
+    top_k_window_hours: 24
+
+  - name: tenant_tier
+    column: tenant_tier
+    attribute: tenant.tier
+    source: static
+    budget: 8
+    values: [free, pro, enterprise]
+
+  - name: model
+    column: model
+    attribute: gen_ai.request.model
+    # Static: a serving fleet runs a known set of models. A model name that is
+    # not on this list is a deployment that nobody told the observability
+    # pipeline about, and bucketing it to `__other__` makes that visible.
+    source: static
+    budget: 32
+    values:
+      - llama-3.1-8b-instruct
+      - llama-3.1-70b-instruct
+      - mistral-7b-instruct
+      - qwen2.5-14b-instruct
+      - claude-haiku-proxy
+
+  - name: operation
+    column: operation
+    attribute: gen_ai.operation.name
+    source: static
+    budget: 16
+    values: [chat, embeddings, invoke_agent, execute_tool]
+
+  - name: route
+    column: route
+    attribute: http.route
+    # Routes must be templated (/v1/chat/completions), never raw paths with ids
+    # in them. A raw path is unbounded and would defeat the whole scheme.
+    source: static
+    budget: 32
+    values:
+      - /v1/chat/completions
+      - /v1/completions
+      - /v1/embeddings
+      - /v1/agents/invoke
+
+  - name: region
+    column: region
+    attribute: cloud.region
+    source: static
+    budget: 16
+    values: [us-east-1, us-west-2, eu-central-1]
+
+  - name: status_class
+    column: status_class
+    attribute: status.class
+    # Coarse on purpose. The specific error string lives in spans_raw and is
+    # never a rollup key.
+    source: static
+    budget: 8
+    values: [ok, client_error, server_error, timeout]
+
+# Attributes that must never become rollup keys, whatever anyone later decides.
+# Present in spans_raw for debugging; excluded from every aggregate.
+forbidden_as_dimensions:
+  - trace_id
+  - span_id
+  - parent_span_id
+  - request.id
+  - prompt.hash
+  - error.type

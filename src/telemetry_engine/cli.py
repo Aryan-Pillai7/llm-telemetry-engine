@@ -24,6 +24,8 @@ topics_app = typer.Typer(help="Manage Redpanda topics.", no_args_is_help=True)
 app.add_typer(topics_app, name="topics")
 stack_app = typer.Typer(help="Inspect the local docker stack.", no_args_is_help=True)
 app.add_typer(stack_app, name="stack")
+dims_app = typer.Typer(help="Manage the cardinality allowlist.", no_args_is_help=True)
+app.add_typer(dims_app, name="dimensions")
 
 log = get_logger(__name__)
 
@@ -254,12 +256,68 @@ def load(
         )
 
 
+@dims_app.command("apply")
+def dimensions_apply() -> None:
+    """Sync dimensions.yaml into the ClickHouse allowlist.
+
+    Static values are written as declared; top-K dimensions (tenants) are
+    recomputed from recent traffic. Until this runs, every dimension value
+    collapses to `__other__` -- bounded, but useless.
+    """
+    from telemetry_engine.cardinality.guard import sync
+    from telemetry_engine.cardinality.registry import load_registry
+    from telemetry_engine.storage.client import client
+
+    settings = get_settings()
+    configure_logging(settings.log_level)
+    registry = load_registry()
+
+    with client(settings.clickhouse) as conn:
+        result = sync(conn, registry)
+
+    typer.echo(f"  static values:  {result.static_values}")
+    for name, count in sorted(result.top_k_values.items()):
+        budget = registry.by_name[name].budget
+        typer.echo(f"  top-K {name}: {count}/{budget}")
+    typer.echo(f"  max rollup rows per minute: {registry.max_rows_per_bucket:,}")
+
+
+@dims_app.command("status")
+def dimensions_status(
+    table: str = typer.Option("telemetry.spans_1m", help="Rollup table to audit."),
+) -> None:
+    """Report observed cardinality against budget for every dimension."""
+    from telemetry_engine.cardinality.guard import status as guard_status
+    from telemetry_engine.cardinality.registry import load_registry
+    from telemetry_engine.storage.client import client
+
+    settings = get_settings()
+    registry = load_registry()
+
+    with client(settings.clickhouse) as conn:
+        rows = guard_status(conn, registry, table=table)
+
+    typer.echo(f"  {'dimension':<14}{'allowed':>9}{'budget':>8}{'distinct':>10}{'__other__':>12}")
+    for row in rows:
+        flag = "" if row.within_budget else "  OVER BUDGET"
+        typer.secho(
+            f"  {row.name:<14}{row.allowlisted:>9}{row.budget:>8}"
+            f"{row.observed_distinct:>10}{row.other_share:>11.1%}{flag}",
+            fg=None if row.within_budget else typer.colors.RED,
+        )
+    typer.echo("")
+    typer.echo(f"  theoretical max rows/minute: {registry.max_rows_per_bucket:,}")
+
+
 @app.command()
 def bootstrap() -> None:
-    """Bring a freshly started stack to a usable state: topics, then schema."""
+    """Bring a freshly started stack to a usable state: topics, schema, allowlist."""
     stack_wait(timeout=90.0)
     topics_apply(dry_run=False)
     migrate(dry_run=False, wait=True)
+    # Without this the rollups bucket everything into __other__: bounded, but
+    # not useful. Static dimensions apply immediately; top-K needs traffic.
+    dimensions_apply()
 
 
 if __name__ == "__main__":  # pragma: no cover

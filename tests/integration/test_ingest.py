@@ -197,9 +197,9 @@ def test_no_messages_landed_in_the_dead_letter_table(settings: Settings) -> None
         sample = ""
         if errors:
             sample = str(
-                conn.query(
-                    "SELECT error FROM telemetry.spans_ingest_errors LIMIT 1"
-                ).result_rows[0][0]
+                conn.query("SELECT error FROM telemetry.spans_ingest_errors LIMIT 1").result_rows[
+                    0
+                ][0]
             )
     assert errors == 0, f"{errors} unparseable messages; first error: {sample}"
 
