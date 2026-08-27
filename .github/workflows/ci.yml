@@ -48,6 +48,12 @@ jobs:
         # is the same failure as a guard that is never called.
         run: python tasks.py typecheck
 
+      - name: Documentation references
+        # A dead markdown link and a Mermaid click target pointing at a moved
+        # module both keep rendering perfectly. Same shape as an inert guard:
+        # the mechanism still runs while pointing at nothing.
+        run: python tasks.py check-docs
+
       - name: Inert guard audit
         # Finds checks that are defined but never invoked from the path they
         # protect. Runtime testing cannot catch these: an inert guard produces

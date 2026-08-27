@@ -169,9 +169,16 @@ def coverage() -> int:
     )
 
 
-@target("Run every static check CI runs (lint, types, guard audit, unit tests)")
+@target("Check every doc link and diagram click target resolves")
+def check_docs() -> int:
+    if (rc := require_venv()) != 0:
+        return rc
+    return py("scripts/check_docs.py")
+
+
+@target("Run every static check CI runs (lint, types, guards, docs, unit tests)")
 def ci() -> int:
-    return first_failure(lint(), typecheck(), audit_guards(), test())
+    return first_failure(lint(), typecheck(), audit_guards(), check_docs(), test())
 
 
 @target("Reconcile Redpanda topics and apply ClickHouse migrations")
