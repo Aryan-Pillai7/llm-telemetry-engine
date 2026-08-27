@@ -9,9 +9,6 @@ Ingested, bounded, aggregated and aged out in real time.
 
 [![CI](https://github.com/Aryan-Pillai7/llm-telemetry-engine/actions/workflows/ci.yml/badge.svg)](https://github.com/Aryan-Pillai7/llm-telemetry-engine/actions/workflows/ci.yml)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
-[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](#license)
-[![Tests](https://img.shields.io/badge/tests-150%20unit%20%2B%2040%20integration-brightgreen)](#development)
-[![Type checked](https://img.shields.io/badge/mypy-clean-blue)](#development)
 
 [![OpenTelemetry](https://img.shields.io/badge/OpenTelemetry-collector-425CC7?logo=opentelemetry&logoColor=white)](https://opentelemetry.io/)
 [![Redpanda](https://img.shields.io/badge/Redpanda-Kafka%20API-E14D2A)](https://redpanda.com/)
@@ -25,7 +22,7 @@ Ingested, bounded, aggregated and aged out in real time.
 
 ---
 
-## 📌 Overview
+## Overview
 
 Observability infrastructure sits next to the thing it observes. If it ever applies
 pressure back toward that thing — by blocking, by eating its CPU, by holding its request
@@ -36,9 +33,9 @@ that constraint. Three properties define it:
 
 | | |
 |---|---|
-| 🚦 **Non-blocking by construction** | Bounded export queues drop-and-count instead of pushing back. A ClickHouse stall becomes *consumer lag*, never endpoint latency. Measured: 135k messages of lag while endpoint p99 moved 28.4 → 32.6 ms. |
-| 🔒 **Cardinality is a budget, not a hope** | Rollup dimensions are declared in a registry with per-dimension budgets, enforced by a ClickHouse dictionary consulted on every row. Unregistered values collapse into an explicit, alertable bucket. |
-| 🧊 **Hot/cold lifecycle** | Raw spans live 48 h; rollups 7 / 90 days; Parquet indefinitely. The cold tier costs disk, not standing RAM — DuckDB is a library, not a service. |
+| **Non-blocking by construction** | Bounded export queues drop-and-count instead of pushing back. A ClickHouse stall becomes *consumer lag*, never endpoint latency. Measured: 135k messages of lag while endpoint p99 moved 28.4 → 32.6 ms. |
+| **Cardinality is a budget, not a hope** | Rollup dimensions are declared in a registry with per-dimension budgets, enforced by a ClickHouse dictionary consulted on every row. Unregistered values collapse into an explicit, alertable bucket. |
+| **Hot/cold lifecycle** | Raw spans live 48 h; rollups 7 / 90 days; Parquet indefinitely. The cold tier costs disk, not standing RAM — DuckDB is a library, not a service. |
 
 > [!IMPORTANT]
 > The most transferable part of this project isn't a throughput number. It's that
@@ -48,7 +45,7 @@ that constraint. Three properties define it:
 
 ---
 
-## 🏗 Architecture
+## Architecture
 
 Deliberately lean: **no Kafka cluster, no ZooKeeper, no Iceberg catalog, no consumer
 microservice.** Four containers, ~540 MiB idle.
@@ -208,7 +205,7 @@ back and verified against the source on both row count *and* values.
 
 ---
 
-## 🚀 Quick start
+## Quick start
 
 **Requirements:** Docker Engine with Compose v2 · Python 3.11+
 
@@ -318,7 +315,7 @@ deduplicated view would make every analytical total quietly wrong.
 
 ---
 
-## 🎯 Key design decisions
+## Key design decisions
 
 <details>
 <summary><b>Cardinality: a registry, a dictionary, and two sentinels</b></summary>
@@ -392,7 +389,7 @@ layout. `telemetry-engine cold verify` checks it explicitly.
 
 ---
 
-## 🧭 Engineering notes: the throughline
+## Engineering notes: the throughline
 
 The pipeline works and the numbers above are real. But the throughline of the build was
 something else:
@@ -443,7 +440,7 @@ Elsewhere the same principle, enforced structurally:
 
 ---
 
-## 📁 Project structure
+## Project structure
 
 ```
 llm-telemetry-engine/
@@ -464,7 +461,7 @@ llm-telemetry-engine/
 
 ---
 
-## 🛠 Development
+## Development
 
 ```bash
 python tasks.py            # list every target
@@ -524,7 +521,7 @@ dashboards once passed the first and failed the second for every panel.
 
 ---
 
-## 📚 Documentation
+## Documentation
 
 | Document | Covers |
 |---|---|
@@ -533,8 +530,4 @@ dashboards once passed the first and failed the second for every panel.
 | [docs/coldtier.md](docs/coldtier.md) | Parquet layout, at-least-once, export verification |
 | [docs/runbook.md](docs/runbook.md) | Symptom → diagnosis → fix, incl. *"before trusting any measurement"* |
 
----
 
-## License
-
-MIT
