@@ -39,7 +39,14 @@ Phase 3 complete — the hot path moves data end to end. On a cold stack,
 106,737 emitted spans produced exactly 106,737 rows in ClickHouse, with zero
 dead-lettered messages and consumer lag back to 0.
 
-Phase 4 complete — 1m/1h rollups with an enforced cardinality bound. Rollup
+Phase 6 complete — the backpressure claim is measured, not asserted. Under a
+68-second ClickHouse stall at ~6.2k spans/s, consumer lag grew to 135,447
+messages and drained in 34.2s, while endpoint p99 moved 28.4 ms → 32.6 ms. The
+pipeline shed 2.7% of telemetry on purpose and knows exactly how much. Full
+method, numbers, and the four invalid runs that preceded the valid one:
+[docs/backpressure.md](docs/backpressure.md).
+
+Phase 4 delivered 1m/1h rollups with an enforced cardinality bound. Rollup
 totals match raw exactly; tDigest p95 is within 0.44% of exact; 349k raw rows
 (43 MiB) reduce to 19k rollup rows (3.8 MiB).
 
@@ -171,7 +178,8 @@ Most commands take `--dry-run`.
 
 Two decisions carry most of the weight:
 
-**Backpressure.** Nothing in the pipeline blocks upstream. The collector's
+**Backpressure** ([measured](docs/backpressure.md)). Nothing in the pipeline
+blocks upstream. The collector's
 export queue is bounded and non-blocking: on overflow it drops and increments a
 counter rather than pushing back toward the endpoint. Redpanda's disk-backed
 retention absorbs bursts, so a ClickHouse stall shows up as *consumer lag*, not
