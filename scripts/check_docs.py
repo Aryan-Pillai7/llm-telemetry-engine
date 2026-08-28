@@ -27,7 +27,13 @@ SKIP_FILES = {"CLAUDE.md", "plan.md", "decisions.md"}
 
 LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
 MERMAID_RE = re.compile(r"```mermaid\n(.*?)```", re.DOTALL)
-CLICK_RE = re.compile(r'^\s*click\s+\S+\s+"([^"]+)"', re.MULTILINE)
+CLICK_RE = re.compile(r'^\s*click\s+\S+\s+(?:href\s+)?"([^"]+)"', re.MULTILINE)
+
+# Click targets are absolute blob URLs, because GitHub renders Mermaid in a
+# sandboxed frame where a relative path resolves against the wrong origin. That
+# makes them look external to a naive check, so resolve them back to repo paths
+# rather than skipping them -- skipping is how this check would go inert.
+BLOB_PREFIX = "https://github.com/Aryan-Pillai7/llm-telemetry-engine/blob/main/"
 
 
 def markdown_files() -> list[Path]:
@@ -52,7 +58,12 @@ def check_mermaid_clicks(path: Path) -> list[str]:
     problems: list[str] = []
     for block in MERMAID_RE.findall(path.read_text(encoding="utf-8")):
         for target in CLICK_RE.findall(block):
-            if target.startswith(("http://", "https://")):
+            if target.startswith(BLOB_PREFIX):
+                target = target[len(BLOB_PREFIX) :]
+            elif target.startswith(("http://", "https://")):
+                problems.append(
+                    f"{path.name}: mermaid click -> {target} (expected a path under {BLOB_PREFIX})"
+                )
                 continue
             if not (REPO_ROOT / target).exists():
                 problems.append(f"{path.name}: mermaid click -> {target}")

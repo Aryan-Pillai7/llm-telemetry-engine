@@ -50,7 +50,10 @@ that constraint. Three properties define it:
 Deliberately lean: **no Kafka cluster, no ZooKeeper, no Iceberg catalog, no consumer
 microservice.** Four containers, ~540 MiB idle.
 
-> Nodes are clickable — they link to the module or config that implements them.
+> [!TIP]
+> Diagram nodes are clickable in Mermaid-native viewers. GitHub renders the
+> diagram in a sandboxed frame that strips the links, so the same mapping is
+> repeated as a table underneath — it works everywhere.
 
 ```mermaid
 flowchart TB
@@ -111,19 +114,40 @@ flowchart TB
     class PQ,DD cold
     class GF view
 
-    click EP "src/telemetry_engine/emitters/workload.py" "Workload generator"
-    click OC "deploy/otelcol/config.yaml" "Collector config"
-    click RP "deploy/redpanda/topics.yaml" "Topic spec"
-    click KE "schemas/clickhouse/010_kafka_spans.sql" "Kafka engine table"
-    click MV "schemas/clickhouse/110_mv_spans_1m_v2.sql" "Guarded rollup view"
-    click RAW "schemas/clickhouse/020_spans_raw.sql" "Raw span table"
-    click M1 "schemas/clickhouse/070_spans_1m.sql" "1-minute rollup"
-    click H1 "schemas/clickhouse/090_spans_1h.sql" "1-hour rollup"
-    click DLQ "schemas/clickhouse/040_spans_ingest_errors.sql" "Dead letter table"
-    click PQ "src/telemetry_engine/coldtier/export.py" "Verified exporter"
-    click DD "src/telemetry_engine/coldtier/query.py" "DuckDB query layer"
-    click GF "src/telemetry_engine/dashboards.py" "Dashboards as code"
+    click EP href "https://github.com/Aryan-Pillai7/llm-telemetry-engine/blob/main/src/telemetry_engine/emitters/workload.py" _blank
+    click OC href "https://github.com/Aryan-Pillai7/llm-telemetry-engine/blob/main/deploy/otelcol/config.yaml" _blank
+    click RP href "https://github.com/Aryan-Pillai7/llm-telemetry-engine/blob/main/deploy/redpanda/topics.yaml" _blank
+    click KE href "https://github.com/Aryan-Pillai7/llm-telemetry-engine/blob/main/schemas/clickhouse/010_kafka_spans.sql" _blank
+    click MV href "https://github.com/Aryan-Pillai7/llm-telemetry-engine/blob/main/schemas/clickhouse/110_mv_spans_1m_v2.sql" _blank
+    click RAW href "https://github.com/Aryan-Pillai7/llm-telemetry-engine/blob/main/schemas/clickhouse/020_spans_raw.sql" _blank
+    click M1 href "https://github.com/Aryan-Pillai7/llm-telemetry-engine/blob/main/schemas/clickhouse/070_spans_1m.sql" _blank
+    click H1 href "https://github.com/Aryan-Pillai7/llm-telemetry-engine/blob/main/schemas/clickhouse/090_spans_1h.sql" _blank
+    click DLQ href "https://github.com/Aryan-Pillai7/llm-telemetry-engine/blob/main/schemas/clickhouse/040_spans_ingest_errors.sql" _blank
+    click PQ href "https://github.com/Aryan-Pillai7/llm-telemetry-engine/blob/main/src/telemetry_engine/coldtier/export.py" _blank
+    click DD href "https://github.com/Aryan-Pillai7/llm-telemetry-engine/blob/main/src/telemetry_engine/coldtier/query.py" _blank
+    click GF href "https://github.com/Aryan-Pillai7/llm-telemetry-engine/blob/main/src/telemetry_engine/dashboards.py" _blank
 ```
+
+<details>
+<summary><b>Where each box lives in the repo</b></summary>
+
+| Node | Source | What it does |
+| --- | --- | --- |
+| Mock endpoints | [`src/telemetry_engine/emitters/workload.py`](src/telemetry_engine/emitters/workload.py) | Workload generator |
+| OTel Collector | [`deploy/otelcol/config.yaml`](deploy/otelcol/config.yaml) | Collector config |
+| Redpanda | [`deploy/redpanda/topics.yaml`](deploy/redpanda/topics.yaml) | Topic spec |
+| Kafka table engine | [`schemas/clickhouse/010_kafka_spans.sql`](schemas/clickhouse/010_kafka_spans.sql) | Kafka engine table |
+| Materialized view | [`schemas/clickhouse/110_mv_spans_1m_v2.sql`](schemas/clickhouse/110_mv_spans_1m_v2.sql) | Guarded rollup view |
+| `spans_raw` | [`schemas/clickhouse/020_spans_raw.sql`](schemas/clickhouse/020_spans_raw.sql) | Raw span table |
+| `spans_1m` | [`schemas/clickhouse/070_spans_1m.sql`](schemas/clickhouse/070_spans_1m.sql) | 1-minute rollup |
+| `spans_1h` | [`schemas/clickhouse/090_spans_1h.sql`](schemas/clickhouse/090_spans_1h.sql) | 1-hour rollup |
+| Dead letter | [`schemas/clickhouse/040_spans_ingest_errors.sql`](schemas/clickhouse/040_spans_ingest_errors.sql) | Dead letter table |
+| Parquet lake | [`src/telemetry_engine/coldtier/export.py`](src/telemetry_engine/coldtier/export.py) | Verified exporter |
+| DuckDB | [`src/telemetry_engine/coldtier/query.py`](src/telemetry_engine/coldtier/query.py) | DuckDB query layer |
+| Grafana | [`src/telemetry_engine/dashboards.py`](src/telemetry_engine/dashboards.py) | Dashboards as code |
+
+</details>
+
 
 <details>
 <summary><b>How backpressure actually behaves under a consumer stall</b> (measured, not asserted)</summary>
