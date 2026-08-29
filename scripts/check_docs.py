@@ -23,7 +23,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 # Local-only files, deliberately gitignored.
-SKIP_FILES = {"CLAUDE.md", "plan.md", "decisions.md"}
+SKIP_FILES = {"CLAUDE.md", "plan.md", "decisions.md", "instructions.md"}
 
 LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
 MERMAID_RE = re.compile(r"```mermaid\n(.*?)```", re.DOTALL)
