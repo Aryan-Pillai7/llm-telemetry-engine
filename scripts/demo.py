@@ -122,6 +122,7 @@ def main() -> int:
 
     print()
     print("  LOOK AT")
+    print("    Live Pipeline  python tasks.py web  ->  http://localhost:8090")
     print("    Grafana        http://localhost:3000  (no login)")
     print("      - LLM Telemetry - Overview          throughput, TTFT, KV-cache, tenants")
     print("      - LLM Telemetry - Pipeline Health   lag, drops, ingest latency")

@@ -190,6 +190,26 @@ def serve(
 
 
 @app.command()
+def web(
+    host: str = typer.Option("127.0.0.1", help="Bind address for the dashboard."),
+    port: int = typer.Option(8090, help="Port for the dashboard."),
+) -> None:
+    """Serve the one-page Live Pipeline dashboard.
+
+    The presenting view of the hot tier. Grafana remains the operational one.
+    """
+    import uvicorn
+
+    from telemetry_engine.webdash.app import create_app
+
+    settings = get_settings()
+    configure_logging(settings.log_level)
+    typer.echo(f"  Live Pipeline: http://{host}:{port}")
+    # Access logs off: the page polls every 5s and would bury anything useful.
+    uvicorn.run(create_app(settings), host=host, port=port, log_level="warning")
+
+
+@app.command()
 def load(
     duration: float = typer.Option(30.0, help="Seconds to generate load for."),
     profile: str = typer.Option("steady", help="Load shape: steady | burst | ramp."),

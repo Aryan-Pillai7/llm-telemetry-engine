@@ -216,6 +216,13 @@ def load_burst() -> int:
     return py("-m", "telemetry_engine.cli", "load", "--profile", "burst", "--duration", "60")
 
 
+@target("Serve the one-page Live Pipeline dashboard on :8090")
+def web() -> int:
+    if (rc := require_venv()) != 0:
+        return rc
+    return py("-m", "telemetry_engine.cli", "web")
+
+
 @target("One command from nothing to a populated, queryable pipeline")
 def demo() -> int:
     if (rc := require_venv()) != 0:

@@ -1,0 +1,29 @@
+{
+  "name": "Telemetry Engine",
+  "dataColors": ["#4F5BD5", "#8E96E6", "#1F9D6B", "#E0A23B", "#D14343", "#B9BDC7", "#2E3A8C", "#C5C9F2"],
+  "background": "#FFFFFF",
+  "foreground": "#1C2230",
+  "tableAccent": "#4F5BD5",
+  "good": "#1F9D6B",
+  "bad": "#D14343",
+  "neutral": "#B9BDC7",
+  "textClasses": {
+    "title": { "fontFace": "Segoe UI Semibold", "fontSize": 12, "color": "#1C2230" },
+    "callout": { "fontFace": "Segoe UI Semibold", "fontSize": 28, "color": "#1C2230" },
+    "label": { "fontFace": "Segoe UI", "fontSize": 10, "color": "#6B7280" }
+  },
+  "visualStyles": {
+    "*": {
+      "*": {
+        "border": [{ "show": true, "color": { "solid": { "color": "#E6E8EC" } }, "radius": 10 }],
+        "background": [{ "show": true, "color": { "solid": { "color": "#FFFFFF" } } }],
+        "dropShadow": [{ "show": false }]
+      }
+    },
+    "page": {
+      "*": {
+        "background": [{ "color": { "solid": { "color": "#F6F7F9" } }, "transparency": 0 }]
+      }
+    }
+  }
+}

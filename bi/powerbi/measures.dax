@@ -1,0 +1,14 @@
+// The five measures the report uses. Create each on the "spans" table:
+// Home > New measure, paste one line, press Enter.
+
+Total Spans = COUNTROWS ( spans )
+
+Total Tokens = SUM ( spans[tokens] )
+
+Tenants = DISTINCTCOUNT ( spans[tenant_id] )
+
+// 95% of LLM calls produced their first token faster than this.
+// Tool-call spans have a blank TTFT and are skipped.
+p95 TTFT (ms) = PERCENTILEX.INC ( FILTER ( spans, NOT ISBLANK ( spans[ttft_ms] ) ), spans[ttft_ms], 0.95 )
+
+Error % = DIVIDE ( CALCULATE ( COUNTROWS ( spans ), spans[status_class] <> "ok" ), COUNTROWS ( spans ) )

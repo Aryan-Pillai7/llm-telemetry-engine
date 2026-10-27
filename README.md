@@ -275,6 +275,14 @@ a row count is the same category of thing this project spent eight phases removi
 Then open **[http://localhost:3000](http://localhost:3000)** (no login) for three
 provisioned dashboards.
 
+For presenting, two simpler views sit on top of the same data:
+
+- **Live Pipeline** (hot tier): `python tasks.py web`, then open
+  [http://localhost:8090](http://localhost:8090). One page with four numbers, a
+  throughput line and the top tenants, refreshing every 5 seconds.
+- **Cold Tier Analytics** (Power BI): a one-page report over the Parquet files.
+  Build steps are in [`bi/powerbi/README.md`](bi/powerbi/README.md).
+
 | Service | Endpoint |
 |---|---|
 | Grafana | `localhost:3000` |
@@ -510,6 +518,7 @@ There's no Makefile — the primary dev environment is Windows, and one cross-pl
 | `ci` | Everything the static CI jobs run |
 | `up` `down` `nuke` `logs` `ps` | Stack lifecycle |
 | `load` · `load-burst` · `serve` | Generate telemetry |
+| `web` | Live Pipeline dashboard on :8090 |
 
 ```bash
 telemetry-engine config             # effective, env-resolved settings

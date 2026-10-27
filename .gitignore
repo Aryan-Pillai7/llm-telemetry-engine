@@ -227,5 +227,7 @@ instructions.md
 data/
 *.duckdb
 *.duckdb.wal
+# Power BI reports embed a full copy of the data they were built from.
+*.pbix
 .clickhouse/
 .redpanda/

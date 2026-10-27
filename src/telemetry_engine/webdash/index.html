@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Live Pipeline</title>
+<style>
+  :root {
+    --bg: #f6f7f9;
+    --card: #ffffff;
+    --ink: #1c2230;
+    --muted: #6b7280;
+    --line: #e6e8ec;
+    --accent: #4f5bd5;
+    --accent-soft: #e9ebfb;
+    --good: #1f9d6b;
+    --bad: #d14343;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font: 15px/1.45 "Segoe UI", system-ui, -apple-system, sans-serif;
+  }
+  main { max-width: 1100px; margin: 0 auto; padding: 32px 16px 48px; }
+  header { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+  h1 { margin: 0; font-size: 26px; font-weight: 600; letter-spacing: -0.01em; }
+  .sub { color: var(--muted); margin-top: 4px; }
+  .status { color: var(--muted); font-size: 13px; display: flex; align-items: center; gap: 8px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--good); }
+  .dot.stale { background: var(--bad); }
+
+  .grid { display: grid; gap: 16px; margin-top: 24px; }
+  .tiles { grid-template-columns: repeat(4, 1fr); }
+  .row { grid-template-columns: 2fr 1fr; }
+  @media (max-width: 860px) {
+    .tiles { grid-template-columns: repeat(2, 1fr); }
+    .row { grid-template-columns: 1fr; }
+  }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 20px; }
+  .label { color: var(--muted); font-size: 13px; }
+  .value { font-size: 32px; font-weight: 600; margin-top: 6px; font-variant-numeric: tabular-nums; }
+  .value.good { color: var(--good); }
+  .value.bad { color: var(--bad); }
+  .hint { color: var(--muted); font-size: 12.5px; margin-top: 4px; }
+  h2 { margin: 0 0 12px; font-size: 15px; font-weight: 600; }
+
+  .big { font-size: 56px; font-weight: 600; color: var(--accent); line-height: 1.1; margin: 8px 0; }
+  .compare { margin-top: 16px; display: grid; gap: 10px; }
+  .bar-track { background: var(--accent-soft); border-radius: 6px; height: 10px; overflow: hidden; }
+  .bar-fill { background: var(--accent); height: 100%; border-radius: 6px; }
+  .compare .label { display: flex; justify-content: space-between; margin-bottom: 4px; }
+
+  svg { display: block; width: 100%; height: auto; }
+  svg text { fill: var(--muted); font-size: 11px; }
+  .tenant { display: grid; grid-template-columns: 110px 1fr 90px; align-items: center; gap: 12px; padding: 5px 0; }
+  .tenant .name { font-size: 13px; }
+  .tenant .n { text-align: right; font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .tenant.other .bar-fill { background: #b9bdc7; }
+  .empty { color: var(--muted); padding: 40px 0; text-align: center; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div>
+      <h1>Live Pipeline</h1>
+      <div class="sub">LLM telemetry flowing through Redpanda into ClickHouse (hot tier)</div>
+    </div>
+    <div class="status"><span class="dot" id="dot"></span><span id="updated">connecting…</span></div>
+  </header>
+
+  <section class="grid tiles">
+    <div class="card">
+      <div class="label">Spans stored</div>
+      <div class="value" id="total">–</div>
+      <div class="hint">Volume: total events in the hot tier</div>
+    </div>
+    <div class="card">
+      <div class="label">Spans per second</div>
+      <div class="value" id="rate">–</div>
+      <div class="hint">Velocity: ingest rate, last minute</div>
+    </div>
+    <div class="card">
+      <div class="label">Consumer lag</div>
+      <div class="value" id="lag">–</div>
+      <div class="hint">Messages waiting in Redpanda</div>
+    </div>
+    <div class="card">
+      <div class="label">Dropped spans</div>
+      <div class="value" id="dropped">–</div>
+      <div class="hint">Data lost on the way in</div>
+    </div>
+  </section>
+
+  <section class="grid row">
+    <div class="card">
+      <h2>Spans per minute · last 15 minutes</h2>
+      <div id="line"></div>
+    </div>
+    <div class="card">
+      <h2>Rollup saves the scan</h2>
+      <div class="big" id="ratio">–</div>
+      <div class="hint">fewer rows to read, by pre-aggregating per minute</div>
+      <div class="compare">
+        <div>
+          <div class="label"><span>Raw spans</span><span id="rawn">–</span></div>
+          <div class="bar-track"><div class="bar-fill" style="width:100%"></div></div>
+        </div>
+        <div>
+          <div class="label"><span>Rollup rows</span><span id="rolln">–</span></div>
+          <div class="bar-track"><div class="bar-fill" id="rollbar" style="width:0"></div></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="grid">
+    <div class="card">
+      <h2>Top 10 tenants by spans · the long tail is grouped as __other__</h2>
+      <div id="tenants"></div>
+    </div>
+  </section>
+</main>
+
+<script>
+const REFRESH_MS = 5000;
+const fmt = n => n == null ? "n/a" : n.toLocaleString();
+const $ = id => document.getElementById(id);
+
+function setZeroIsGood(el, n) {
+  el.textContent = fmt(n);
+  el.className = "value" + (n == null ? "" : n === 0 ? " good" : " bad");
+}
+
+function drawLine(points) {
+  const box = $("line");
+  if (!points.length) { box.innerHTML = '<div class="empty">No spans in the last 15 minutes. Run the demo or load generator.</div>'; return; }
+  const W = 640, H = 220, L = 52, R = 12, T = 12, B = 26;
+  const max = Math.max(...points.map(p => p.n)) * 1.1 || 1;
+  const t0 = points[0].t, t1 = Math.max(points[points.length - 1].t, t0 + 60);
+  const x = t => L + (t - t0) / (t1 - t0) * (W - L - R);
+  const y = n => T + (1 - n / max) * (H - T - B);
+  const path = points.map((p, i) => (i ? "L" : "M") + x(p.t).toFixed(1) + "," + y(p.n).toFixed(1)).join(" ");
+  const area = path + ` L${x(points[points.length - 1].t).toFixed(1)},${H - B} L${x(t0).toFixed(1)},${H - B} Z`;
+  let grid = "";
+  for (let i = 0; i <= 3; i++) {
+    const v = max * i / 3, yy = y(v).toFixed(1);
+    grid += `<line x1="${L}" x2="${W - R}" y1="${yy}" y2="${yy}" stroke="#eef0f3"/>`;
+    grid += `<text x="${L - 8}" y="${+yy + 4}" text-anchor="end">${Math.round(v).toLocaleString()}</text>`;
+  }
+  const time = t => new Date(t * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  grid += `<text x="${L}" y="${H - 6}">${time(t0)}</text>`;
+  grid += `<text x="${W - R}" y="${H - 6}" text-anchor="end">${time(t1)}</text>`;
+  const dots = points.map(p => `<circle cx="${x(p.t).toFixed(1)}" cy="${y(p.n).toFixed(1)}" r="3" fill="#4f5bd5"><title>${time(p.t)}: ${p.n.toLocaleString()} spans</title></circle>`).join("");
+  box.innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Spans per minute">${grid}
+    <path d="${area}" fill="#4f5bd5" opacity="0.08"/>
+    <path d="${path}" fill="none" stroke="#4f5bd5" stroke-width="2"/>${dots}</svg>`;
+}
+
+function drawTenants(rows) {
+  const box = $("tenants");
+  if (!rows.some(r => r.n)) { box.innerHTML = '<div class="empty">No tenant data yet.</div>'; return; }
+  const max = Math.max(...rows.map(r => r.n)) || 1;
+  box.innerHTML = rows.map(r => `
+    <div class="tenant${r.name === "__other__" ? " other" : ""}">
+      <span class="name">${r.name}</span>
+      <div class="bar-track"><div class="bar-fill" style="width:${(r.n / max * 100).toFixed(1)}%"></div></div>
+      <span class="n">${r.n.toLocaleString()}</span>
+    </div>`).join("");
+}
+
+async function refresh() {
+  try {
+    const res = await fetch("/api/summary");
+    if (!res.ok) throw new Error(res.status);
+    const d = await res.json();
+    $("total").textContent = fmt(d.total_spans);
+    $("rate").textContent = fmt(d.spans_per_sec);
+    setZeroIsGood($("lag"), d.consumer_lag);
+    setZeroIsGood($("dropped"), d.dropped_spans);
+    $("rawn").textContent = fmt(d.total_spans);
+    $("rolln").textContent = fmt(d.rollup_rows);
+    $("ratio").textContent = d.rollup_rows ? Math.round(d.total_spans / d.rollup_rows) + "×" : "–";
+    $("rollbar").style.width = d.total_spans ? Math.max(0.5, d.rollup_rows / d.total_spans * 100) + "%" : "0";
+    drawLine(d.per_minute);
+    drawTenants(d.tenants);
+    $("dot").className = "dot";
+    $("updated").textContent = "updated " + new Date().toLocaleTimeString();
+  } catch (e) {
+    $("dot").className = "dot stale";
+    $("updated").textContent = "cannot reach the pipeline, retrying…";
+  }
+}
+refresh();
+setInterval(refresh, REFRESH_MS);
+</script>
+</body>
+</html>
