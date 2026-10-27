@@ -223,6 +223,13 @@ def web() -> int:
     return py("-m", "telemetry_engine.cli", "web")
 
 
+@target("Generate the Power BI cold-tier report and open it")
+def powerbi() -> int:
+    if (rc := require_venv()) != 0:
+        return rc
+    return py("scripts/build_powerbi.py")
+
+
 @target("One command from nothing to a populated, queryable pipeline")
 def demo() -> int:
     if (rc := require_venv()) != 0:
